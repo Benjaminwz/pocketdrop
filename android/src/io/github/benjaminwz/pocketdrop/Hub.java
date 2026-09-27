@@ -52,6 +52,13 @@ import java.util.concurrent.Executors;
  * 跟電腦的約定：UDP 廣播 "POCKETDROP?" 找電腦，之後全部走 HTTP（對應電腦版 pocketdrop.pyw 的 Handler）。
  */
 public class Hub {
+    /** 介面文字：手機是中文就用中文，其他語言一律英文。 */
+    public static final boolean ZH = "zh".equals(Locale.getDefault().getLanguage());
+
+    public static String T(String zh, String en) {
+        return ZH ? zh : en;
+    }
+
     public static final int PORT = 47850;
     public static final int UDP_PORT = 47852;
     public static final String FOLDER = "PocketDrop";
@@ -72,7 +79,7 @@ public class Hub {
     }
 
     public static class Pc {
-        public String id = "", name = "電腦", host;
+        public String id = "", name = T("電腦", "PC"), host;
         public int port = PORT;
         /** 是不是透過 USB 線（手機的 USB 網路共用）找到的。 */
         public boolean usb;
@@ -103,7 +110,7 @@ public class Hub {
     private final Set<String> saved = new HashSet<>();
 
     public volatile int state = SEARCHING;
-    public volatile String stateText = "正在尋找電腦…";
+    public volatile String stateText = T("正在尋找電腦…", "Looking for your PC…");
     public volatile List<Pc> choices = new ArrayList<>();
     private volatile String host, key, pcId, pcName;
     private volatile int port;
@@ -122,7 +129,7 @@ public class Hub {
         port = prefs.getInt("port", PORT);
         key = prefs.getString("key", null);
         pcId = prefs.getString("pc_id", "");
-        pcName = prefs.getString("pc_name", "電腦");
+        pcName = prefs.getString("pc_name", T("電腦", "PC"));
         Thread t = new Thread(this::loop, "pocketdrop-net");
         t.setDaemon(true);
         t.start();
@@ -154,7 +161,7 @@ public class Hub {
 
     public void retry() {
         userRetry = true;
-        setState(SEARCHING, "正在尋找電腦…");
+        setState(SEARCHING, T("正在尋找電腦…", "Looking for your PC…"));
         kick();
     }
 
@@ -192,7 +199,7 @@ public class Hub {
             }
             if (e.name == null || e.name.isEmpty()) {
                 String last = uri.getLastPathSegment();
-                e.name = last != null ? last : "檔案";
+                e.name = last != null ? last : T("檔案", "file");
             }
             addEntry(e);
             sender.execute(() -> upload(uri, e));
@@ -205,7 +212,7 @@ public class Hub {
         addEntry(e);
         sender.execute(() -> {
             if (!waitConnected(60000)) {
-                fail(e, "沒有連上電腦");
+                fail(e, T("沒有連上電腦", "Not connected to a PC"));
                 return;
             }
             HttpURLConnection c = null;
@@ -226,10 +233,10 @@ public class Hub {
                     e.state = Entry.OK;
                     changed();
                 } else {
-                    fail(e, "電腦回應 " + code);
+                    fail(e, T("電腦回應 ", "PC replied ") + code);
                 }
             } catch (IOException ex) {
-                fail(e, "傳送失敗，請再試一次");
+                fail(e, T("傳送失敗，請再試一次", "Couldn't send. Please try again"));
             } finally {
                 if (c != null) c.disconnect();
             }
@@ -261,9 +268,9 @@ public class Hub {
                 else poll();
             } catch (Unauthorized e) {
                 clearKey();
-                setState(SEARCHING, "電腦取消了配對，重新連線…");
+                setState(SEARCHING, T("電腦取消了配對，重新連線…", "The PC unpaired this phone. Reconnecting…"));
             } catch (Exception e) {
-                if (state == CONNECTED) setState(SEARCHING, "跟電腦斷線了，重新尋找…");
+                if (state == CONNECTED) setState(SEARCHING, T("跟電腦斷線了，重新尋找…", "Lost the connection. Searching again…"));
                 sleep(1500);
             }
         }
@@ -280,7 +287,7 @@ public class Hub {
         if (manual != null) {
             Pc p = parseHost(manual);
             if (p == null) {
-                setState(NOT_FOUND, "IP 格式不對，例如 192.168.1.23");
+                setState(NOT_FOUND, T("IP 格式不對，例如 192.168.1.23", "That IP doesn't look right, e.g. 192.168.1.23"));
                 return;
             }
             pair(p);
@@ -295,7 +302,7 @@ public class Hub {
             sleep(30000);
             return;
         }
-        if (state != NOT_FOUND) setState(SEARCHING, "正在尋找電腦…");
+        if (state != NOT_FOUND) setState(SEARCHING, T("正在尋找電腦…", "Looking for your PC…"));
 
         // 1. 上次那台電腦還在原本的 IP
         if (key != null && host != null) {
@@ -321,7 +328,7 @@ public class Hub {
                 }
             }
             // 配對過的電腦沒開：不自動去連別台，等它開
-            setState(NOT_FOUND, "找不到電腦「" + pcName + "」。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。");
+            setState(NOT_FOUND, T("找不到電腦「", "Can't find \"") + pcName + T("」。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。", "\". Make sure PocketDrop is open on the PC and both are on the same Wi-Fi."));
             sleep(4000);
             return;
         }
@@ -332,7 +339,7 @@ public class Hub {
             }
         }
         if (found.isEmpty()) {
-            setState(NOT_FOUND, "找不到電腦。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。");
+            setState(NOT_FOUND, T("找不到電腦。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。", "No PC found. Make sure PocketDrop is open on the PC and both are on the same Wi-Fi."));
             sleep(4000);
             return;
         }
@@ -341,13 +348,13 @@ public class Hub {
             return;
         }
         choices = found;
-        setState(CHOOSE, "找到好幾台電腦，請選一台");
+        setState(CHOOSE, T("找到好幾台電腦，請選一台", "Found several PCs. Pick one"));
     }
 
     /** 跟電腦打招呼；第一次連的手機，電腦那邊要按「允許」。 */
     private void pair(Pc p) {
-        if (p.usb) setState(WAIT_APPROVE, "透過 USB 線連線中…");
-        else setState(WAIT_APPROVE, "請到電腦" + (p.name.equals("電腦") ? "" : "「" + p.name + "」") + "上按「允許」");
+        if (p.usb) setState(WAIT_APPROVE, T("透過 USB 線連線中…", "Connecting over USB…"));
+        else setState(WAIT_APPROVE, T("請到電腦", "Click \"Allow\" on the PC") + (p.name.equals(T("電腦", "PC")) ? "" : T("「", " (") + p.name + T("」", ")")) + T("上按「允許」", ""));
         HttpURLConnection c = null;
         try {
             c = open(p.host, p.port, "/api/hello", null);
@@ -363,20 +370,20 @@ public class Hub {
                 JSONObject j = new JSONObject(readAll(c.getInputStream()));
                 key = j.getString("key");
                 pcId = j.optString("id", "");
-                pcName = j.optString("name", "電腦");
+                pcName = j.optString("name", T("電腦", "PC"));
                 prefs.edit().putString("key", key).putString("pc_id", pcId).putString("pc_name", pcName).apply();
                 saveHost(p);
                 setConnected();
             } else if (code == 403) {
-                setState(DENIED, "電腦沒有允許連線。要再試一次請按「重新搜尋」。");
+                setState(DENIED, T("電腦沒有允許連線。要再試一次請按「重新搜尋」。", "The PC declined. Tap \"Search again\" to retry."));
             } else if (code == 409) {
-                setState(SEARCHING, "電腦正在確認另一支手機，稍等…");
+                setState(SEARCHING, T("電腦正在確認另一支手機，稍等…", "The PC is approving another phone. Please wait…"));
                 sleep(3000);
             } else {
                 throw new IOException("HTTP " + code);
             }
         } catch (IOException | JSONException e) {
-            setState(NOT_FOUND, "連不上 " + p.host + "。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。");
+            setState(NOT_FOUND, T("連不上 ", "Can't reach ") + p.host + T("。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。", ". Make sure PocketDrop is open on the PC and both are on the same Wi-Fi."));
             sleep(3000);
         } finally {
             if (c != null) c.disconnect();
@@ -395,7 +402,7 @@ public class Hub {
     }
 
     private void setConnected() {
-        setState(CONNECTED, "已連上：" + pcName + (isUsbHost(host) ? "（USB 線）" : ""));
+        setState(CONNECTED, T("已連上：", "Connected: ") + pcName + (isUsbHost(host) ? T("（USB 線）", " (USB)") : ""));
     }
 
     private int ping(String h, int p) {
@@ -445,7 +452,7 @@ public class Hub {
                     if (!"pocketdrop".equals(j.optString("app"))) continue;
                     Pc pc = new Pc();
                     pc.id = j.optString("id", "");
-                    pc.name = j.optString("name", "電腦");
+                    pc.name = j.optString("name", T("電腦", "PC"));
                     pc.port = j.optInt("port", PORT);
                     pc.host = pkt.getAddress().getHostAddress();
                     pc.usb = inNets(pkt.getAddress(), usbNets);
@@ -592,7 +599,7 @@ public class Hub {
         Entry e = incoming.get(id);
         if (e == null) {
             e = new Entry(Entry.DOWN);
-            e.name = it.optString("name", "檔案");
+            e.name = it.optString("name", T("檔案", "file"));
             e.total = it.optLong("size", -1);
             incoming.put(id, e);
             addEntry(e);
@@ -606,12 +613,12 @@ public class Hub {
             failures.put(id, n);
             if (n < 3) {
                 e.state = Entry.WAITING;
-                e.error = "中斷了，重新接收中…";
+                e.error = T("中斷了，重新接收中…", "Interrupted. Retrying…");
                 changed();
                 throw ex;
             }
             ok = false;
-            e.error = "一直收不完整，請再傳一次";
+            e.error = T("一直收不完整，請再傳一次", "Kept failing. Please send it again");
         }
         incoming.remove(id);
         failures.remove(id);
@@ -631,7 +638,7 @@ public class Hub {
             if (!s.isEmpty() && !s.equals(".") && !s.equals("..")) sub.append('/').append(s);
         }
         String fileName = clean(parts[parts.length - 1]);
-        if (fileName.isEmpty() || fileName.equals(".") || fileName.equals("..")) fileName = "未命名";
+        if (fileName.isEmpty() || fileName.equals(".") || fileName.equals("..")) fileName = T("未命名", "untitled");
         String ext = "";
         int dot = fileName.lastIndexOf('.');
         if (dot >= 0) ext = fileName.substring(dot + 1).toLowerCase(Locale.ROOT);
@@ -645,7 +652,7 @@ public class Hub {
         try {
             int code = c.getResponseCode();
             if (code == 404) {
-                e.error = "電腦上的檔案不見了";
+                e.error = T("電腦上的檔案不見了", "The file is no longer on the PC");
                 return false;
             }
             if (code == 401) throw new Unauthorized();
@@ -664,7 +671,7 @@ public class Hub {
                 uri = null;
             }
             if (uri == null) {
-                e.error = "手機存不下這個檔案";
+                e.error = T("手機存不下這個檔案", "Couldn't save the file on this phone");
                 return false;
             }
             e.state = Entry.RUNNING;
@@ -673,10 +680,10 @@ public class Hub {
             e.startedAt = System.currentTimeMillis();
             changed();
             try (InputStream in = c.getInputStream(); OutputStream out = cr.openOutputStream(uri)) {
-                if (out == null) throw new IOException("沒辦法寫入");
+                if (out == null) throw new IOException(T("沒辦法寫入", "Can't write"));
                 copy(in, out, e);
             }
-            if (e.total >= 0 && e.done != e.total) throw new IOException("檔案沒收完整");
+            if (e.total >= 0 && e.done != e.total) throw new IOException(T("檔案沒收完整", "Incomplete file"));
             v.clear();
             v.put(MediaStore.MediaColumns.IS_PENDING, 0);
             cr.update(uri, v, null, null);
@@ -713,7 +720,7 @@ public class Hub {
     private void upload(Uri uri, Entry e) {
         for (int attempt = 0; attempt < 2; attempt++) {
             if (!waitConnected(60000)) {
-                fail(e, "沒有連上電腦");
+                fail(e, T("沒有連上電腦", "Not connected to a PC"));
                 return;
             }
             HttpURLConnection c = null;
@@ -733,7 +740,7 @@ public class Hub {
                 e.startedAt = System.currentTimeMillis();
                 changed();
                 try (InputStream in = app.getContentResolver().openInputStream(uri); OutputStream out = c.getOutputStream()) {
-                    if (in == null) throw new IOException("讀不到檔案");
+                    if (in == null) throw new IOException(T("讀不到檔案", "Can't read the file"));
                     copy(in, out, e);
                 }
                 int code = c.getResponseCode();
@@ -744,17 +751,17 @@ public class Hub {
                 }
                 if (code == 401) {
                     clearKey();
-                    setState(SEARCHING, "電腦取消了配對，重新連線…");
+                    setState(SEARCHING, T("電腦取消了配對，重新連線…", "The PC unpaired this phone. Reconnecting…"));
                     kick();
-                    fail(e, "電腦取消了配對，請重新傳一次");
+                    fail(e, T("電腦取消了配對，請重新傳一次", "The PC unpaired this phone. Please send it again"));
                     return;
                 }
-                e.error = "電腦回應 " + code;
+                e.error = T("電腦回應 ", "PC replied ") + code;
             } catch (SecurityException ex) {
-                fail(e, "沒有權限讀這個檔案");
+                fail(e, T("沒有權限讀這個檔案", "No permission to read this file"));
                 return;
             } catch (IOException ex) {
-                e.error = "傳到一半斷掉了";
+                e.error = T("傳到一半斷掉了", "The connection dropped");
             } finally {
                 if (c != null) c.disconnect();
             }

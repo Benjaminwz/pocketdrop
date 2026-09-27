@@ -39,6 +39,10 @@ import java.util.Map;
 
 /** 唯一的畫面：上面是連線狀態，中間是「傳到電腦」，下面是紀錄。 */
 public class MainActivity extends Activity implements Hub.Listener {
+    private static String T(String zh, String en) {
+        return Hub.T(zh, en);
+    }
+
     static final int NAVY = 0xFF1A2656, NAVY_TEXT = 0xFFC1CBEE, ACCENT = 0xFF3558D4, ACCENT_SOFT = 0xFFE8EEFF;
     static final int BG = 0xFFF4F6FC, CARD = 0xFFFFFFFF, TEXT = 0xFF1F2A3D, MUTED = 0xFF6B7688, BORDER = 0xFFDDE2F1;
     static final int GREEN = 0xFF22A35A, GREEN_LIGHT = 0xFF7BE0A4, ORANGE_LIGHT = 0xFFFFC069, RED = 0xFFD64545;
@@ -176,7 +180,7 @@ public class MainActivity extends Activity implements Hub.Listener {
         try {
             startActivityForResult(i, code);
         } catch (ActivityNotFoundException e) {
-            toast("手機上找不到選檔案的畫面");
+            toast(T("手機上找不到選檔案的畫面", "No file picker found on this phone"));
         }
     }
 
@@ -200,7 +204,7 @@ public class MainActivity extends Activity implements Hub.Listener {
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.mipmap.ic_launcher);
         titleRow.addView(icon, new LinearLayout.LayoutParams(dp(46), dp(46)));
-        TextView title = label("口袋快傳", 22, Color.WHITE, true);
+        TextView title = label(T("口袋快傳", "PocketDrop"), 22, Color.WHITE, true);
         title.setPadding(dp(12), 0, 0, 0);
         titleRow.addView(title);
         status = label("", 15, NAVY_TEXT, false);
@@ -210,15 +214,15 @@ public class MainActivity extends Activity implements Hub.Listener {
         actions.setPadding(0, dp(12), 0, 0);
         head.addView(actions);
 
-        LinearLayout send = card(root, "傳到電腦");
+        LinearLayout send = card(root, T("傳到電腦", "Send to PC"));
         LinearLayout row = horizontal();
         send.addView(row);
         LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, dp(62), 1);
         left.rightMargin = dp(10);
-        row.addView(button("選照片／影片", true, v -> pickMedia()), left);
-        row.addView(button("選檔案", true, v -> pickFiles()), new LinearLayout.LayoutParams(0, dp(62), 1));
+        row.addView(button(T("選照片／影片", "Photos / videos"), true, v -> pickMedia()), left);
+        row.addView(button(T("選檔案", "Files"), true, v -> pickFiles()), new LinearLayout.LayoutParams(0, dp(62), 1));
         input = new EditText(this);
-        input.setHint("輸入文字或網址…");
+        input.setHint(T("輸入文字或網址…", "Type text or a link…"));
         input.setMinLines(2);
         input.setMaxLines(6);
         input.setTextSize(15);
@@ -233,21 +237,21 @@ public class MainActivity extends Activity implements Hub.Listener {
         send.addView(input, ip);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, dp(48));
         bp.topMargin = dp(10);
-        send.addView(button("傳文字到電腦", false, v -> {
+        send.addView(button(T("傳文字到電腦", "Send text to PC"), false, v -> {
             String t = input.getText().toString();
             if (t.trim().isEmpty()) {
-                toast("先輸入要傳的文字");
+                toast(T("先輸入要傳的文字", "Type something first"));
                 return;
             }
             hub.sendText(t);
             input.setText("");
         }), bp);
 
-        LinearLayout logCard = card(root, "紀錄");
+        LinearLayout logCard = card(root, T("紀錄", "Activity"));
         list = vertical();
         logCard.addView(list);
 
-        TextView foot = label("收到的檔案存在「下載／PocketDrop」資料夾\n電腦傳東西過來時，這個 App 要開著", 12, MUTED, false);
+        TextView foot = label(T("收到的檔案存在「下載／PocketDrop」資料夾\n電腦傳東西過來時，這個 App 要開著", "Received files are saved to Download/PocketDrop\nKeep this app open to receive from the PC"), 12, MUTED, false);
         foot.setGravity(Gravity.CENTER);
         foot.setPadding(dp(16), dp(14), dp(16), dp(26));
         root.addView(foot);
@@ -266,11 +270,11 @@ public class MainActivity extends Activity implements Hub.Listener {
             shownState = s;
             actions.removeAllViews();
             if (s == Hub.NOT_FOUND || s == Hub.DENIED || s == Hub.CHOOSE) {
-                addAction("重新搜尋", v -> hub.retry());
-                addAction("輸入電腦 IP", v -> askIp());
+                addAction(T("重新搜尋", "Search again"), v -> hub.retry());
+                addAction(T("輸入電腦 IP", "Enter PC IP"), v -> askIp());
             }
-            if (s != Hub.CONNECTED) addAction("用 USB 線連", v -> showUsbHelp()); else if (s == Hub.CONNECTED) {
-                addAction("換一台電腦", v -> confirmSwitch());
+            if (s != Hub.CONNECTED) addAction(T("用 USB 線連", "Use USB cable"), v -> showUsbHelp()); else if (s == Hub.CONNECTED) {
+                addAction(T("換一台電腦", "Switch PC"), v -> confirmSwitch());
             }
             actions.setVisibility(actions.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         }
@@ -306,7 +310,7 @@ public class MainActivity extends Activity implements Hub.Listener {
             rows.clear();
             rows.putAll(keep);
             if (shownEntries.isEmpty()) {
-                TextView empty = label("還沒有傳過東西。\n在電腦版口袋快傳拖檔案進視窗，就會出現在這裡。", 14, MUTED, false);
+                TextView empty = label(T("還沒有傳過東西。\n在電腦版口袋快傳拖檔案進視窗，就會出現在這裡。", "Nothing here yet.\nDrag files into PocketDrop on your PC and they'll show up here."), 14, MUTED, false);
                 empty.setPadding(0, dp(6), 0, dp(6));
                 list.addView(empty);
             }
@@ -345,7 +349,7 @@ public class MainActivity extends Activity implements Hub.Listener {
         boolean up = e.kind == Hub.Entry.UP || e.kind == Hub.Entry.TEXT_OUT;
         boolean isText = e.kind == Hub.Entry.TEXT_IN || e.kind == Hub.Entry.TEXT_OUT;
         String arrow = up ? "↑ " : "↓ ";
-        r.title.setText(arrow + (isText ? (up ? "傳給電腦的文字" : "電腦傳來的文字") : e.name));
+        r.title.setText(arrow + (isText ? (up ? T("傳給電腦的文字", "Text sent to PC") : T("電腦傳來的文字", "Text from PC")) : e.name));
         r.body.setVisibility(isText ? View.VISIBLE : View.GONE);
         if (isText) r.body.setText(e.text);
 
@@ -354,11 +358,11 @@ public class MainActivity extends Activity implements Hub.Listener {
         boolean showBar = false;
         switch (e.state) {
             case Hub.Entry.WAITING:
-                sub = e.error != null ? e.error : up ? "等待連上電腦…" : "準備接收…";
+                sub = e.error != null ? e.error : up ? T("等待連上電腦…", "Waiting for the PC…") : T("準備接收…", "Getting ready…");
                 break;
             case Hub.Entry.RUNNING:
                 if (isText) {
-                    sub = "傳送中…";
+                    sub = T("傳送中…", "Sending…");
                     break;
                 }
                 showBar = true;
@@ -368,21 +372,21 @@ public class MainActivity extends Activity implements Hub.Listener {
                     int pct = (int) Math.min(100, e.done * 100 / e.total);
                     r.bar.setIndeterminate(false);
                     r.bar.setProgress((int) Math.min(1000, e.done * 1000 / e.total));
-                    sub = (up ? "傳送中 " : "接收中 ") + pct + "%　" + size(e.done) + " / " + size(e.total) + "　" + speed;
+                    sub = (up ? T("傳送中 ", "Sending ") : T("接收中 ", "Receiving ")) + pct + T("%　", "%  ") + size(e.done) + " / " + size(e.total) + T("　", "  ") + speed;
                 } else {
                     r.bar.setIndeterminate(true);
-                    sub = (up ? "傳送中 " : "接收中 ") + size(e.done) + "　" + speed;
+                    sub = (up ? T("傳送中 ", "Sending ") : T("接收中 ", "Receiving ")) + size(e.done) + T("　", "  ") + speed;
                 }
                 break;
             case Hub.Entry.OK:
                 color = GREEN;
-                if (e.kind == Hub.Entry.DOWN) sub = "✓ 已存到 下載/PocketDrop（" + size(e.total) + "）・點一下打開";
-                else if (e.kind == Hub.Entry.TEXT_IN) sub = "✓ 已複製・點一下再複製";
-                else sub = "✓ 已傳到電腦" + (isText ? "" : "（" + size(e.total) + "）");
+                if (e.kind == Hub.Entry.DOWN) sub = T("✓ 已存到 下載/PocketDrop（", "✓ Saved to Download/PocketDrop (") + size(e.total) + T("）・點一下打開", ") · tap to open");
+                else if (e.kind == Hub.Entry.TEXT_IN) sub = T("✓ 已複製・點一下再複製", "✓ Copied · tap to copy again");
+                else sub = T("✓ 已傳到電腦", "✓ Sent to PC") + (isText ? "" : T("（", " (") + size(e.total) + T("）", ")"));
                 break;
             default:
                 color = RED;
-                sub = "✗ " + (e.error != null ? e.error : "失敗");
+                sub = "✗ " + (e.error != null ? e.error : T("失敗", "Failed"));
         }
         r.bar.setVisibility(showBar ? View.VISIBLE : View.GONE);
         r.sub.setText(sub);
@@ -397,13 +401,13 @@ public class MainActivity extends Activity implements Hub.Listener {
             try {
                 startActivity(i);
             } catch (ActivityNotFoundException ex) {
-                toast("手機上沒有能打開這種檔案的 App");
+                toast(T("手機上沒有能打開這種檔案的 App", "No app on this phone can open this file"));
             } catch (Exception ex) {
-                toast("打不開這個檔案");
+                toast(T("打不開這個檔案", "Can't open this file"));
             }
         } else if (e.text != null) {
             hub.copyToClipboard(e.text);
-            toast("已複製");
+            toast(T("已複製", "Copied"));
         }
     }
 
@@ -411,7 +415,7 @@ public class MainActivity extends Activity implements Hub.Listener {
 
     private void askIp() {
         final EditText et = new EditText(this);
-        et.setHint("例如 192.168.1.23");
+        et.setHint(T("例如 192.168.1.23", "e.g. 192.168.1.23"));
         et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         et.setText(hub.lastHost());
         et.setSingleLine(true);
@@ -419,30 +423,30 @@ public class MainActivity extends Activity implements Hub.Listener {
         wrap.setPadding(dp(22), dp(4), dp(22), 0);
         wrap.addView(et);
         new AlertDialog.Builder(this)
-                .setTitle("輸入電腦的 IP")
-                .setMessage("電腦版口袋快傳視窗上方有寫「本機 IP」。")
+                .setTitle(T("輸入電腦的 IP", "Enter the PC's IP"))
+                .setMessage(T("電腦版口袋快傳視窗上方有寫「本機 IP」。", "It's shown at the top of the PocketDrop window on your PC."))
                 .setView(wrap)
-                .setPositiveButton("連線", (d, w) -> {
+                .setPositiveButton(T("連線", "Connect"), (d, w) -> {
                     String h = et.getText().toString().trim();
                     if (!h.isEmpty()) hub.connectManual(h);
                 })
-                .setNegativeButton("取消", null)
+                .setNegativeButton(T("取消", "Cancel"), null)
                 .show();
     }
 
     /** USB 線連線：手機開「USB 網路共用」，電腦看到是從 USB 網卡進來的就自動配對。 */
     private void showUsbHelp() {
         new AlertDialog.Builder(this)
-                .setTitle("用 USB 線連線")
-                .setMessage("不用 Wi-Fi，也不用在電腦上按「允許」：\n\n"
-                        + "1. 用傳輸線把手機接到電腦\n"
-                        + "2. 按「打開設定」，開啟「USB 網路共用」\n"
-                        + "3. 回到口袋快傳，會自動連上電腦\n\n"
-                        + "配對過一次之後，拔掉線改用 Wi-Fi 也會自動連。\n\n"
-                        + "※ 開著 USB 網路共用時，電腦可能會用手機的網路上網，傳完可以關掉。\n"
-                        + "※ 還是連不上的話，電腦的 Windows 防火牆要允許口袋快傳使用「公用網路」。")
-                .setPositiveButton("打開設定", (d, w) -> openTetherSettings())
-                .setNegativeButton("關閉", null)
+                .setTitle(T("用 USB 線連線", "Connect with a USB cable"))
+                .setMessage(T("不用 Wi-Fi，也不用在電腦上按「允許」：\n\n", "No Wi-Fi needed, and no need to click \"Allow\" on the PC:\n\n")
+                        + T("1. 用傳輸線把手機接到電腦\n", "1. Plug the phone into the PC with a USB cable\n")
+                        + T("2. 按「打開設定」，開啟「USB 網路共用」\n", "2. Tap \"Open settings\" and turn on \"USB tethering\"\n")
+                        + T("3. 回到口袋快傳，會自動連上電腦\n\n", "3. Come back to PocketDrop. It connects automatically\n\n")
+                        + T("配對過一次之後，拔掉線改用 Wi-Fi 也會自動連。\n\n", "After this first pairing, it also reconnects over Wi-Fi without the cable.\n\n")
+                        + T("※ 開著 USB 網路共用時，電腦可能會用手機的網路上網，傳完可以關掉。\n", "* While USB tethering is on, the PC may use the phone's mobile data. Turn it off when you're done.\n")
+                        + T("※ 還是連不上的話，電腦的 Windows 防火牆要允許口袋快傳使用「公用網路」。", "* Still can't connect? Allow PocketDrop on \"Public networks\" in Windows Firewall."))
+                .setPositiveButton(T("打開設定", "Open settings"), (d, w) -> openTetherSettings())
+                .setNegativeButton(T("關閉", "Close"), null)
                 .show();
     }
 
@@ -458,16 +462,16 @@ public class MainActivity extends Activity implements Hub.Listener {
         try {
             startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
         } catch (Exception e) {
-            toast("請到「設定 → 網路 → 熱點與網路共用」開啟 USB 網路共用");
+            toast(T("請到「設定 → 網路 → 熱點與網路共用」開啟 USB 網路共用", "Turn on USB tethering in Settings → Network → Hotspot & tethering"));
         }
     }
 
     private void confirmSwitch() {
         new AlertDialog.Builder(this)
-                .setTitle("換一台電腦？")
-                .setMessage("會忘記目前這台「" + hub.pcName() + "」，重新搜尋 Wi-Fi 裡開著口袋快傳的電腦。")
-                .setPositiveButton("換", (d, w) -> hub.forgetPc())
-                .setNegativeButton("取消", null)
+                .setTitle(T("換一台電腦？", "Switch to another PC?"))
+                .setMessage(T("會忘記目前這台「", "This forgets \"") + hub.pcName() + T("」，重新搜尋 Wi-Fi 裡開著口袋快傳的電腦。", "\" and searches Wi-Fi again for PCs running PocketDrop."))
+                .setPositiveButton(T("換", "Switch"), (d, w) -> hub.forgetPc())
+                .setNegativeButton(T("取消", "Cancel"), null)
                 .show();
     }
 
@@ -475,11 +479,11 @@ public class MainActivity extends Activity implements Hub.Listener {
         final List<Hub.Pc> pcs = hub.choices;
         choiceShown = pcs;
         String[] names = new String[pcs.size()];
-        for (int i = 0; i < pcs.size(); i++) names[i] = pcs.get(i).name + "（" + pcs.get(i).host + "）";
+        for (int i = 0; i < pcs.size(); i++) names[i] = pcs.get(i).name + T("（", " (") + pcs.get(i).host + T("）", ")");
         new AlertDialog.Builder(this)
-                .setTitle("要連哪一台電腦？")
+                .setTitle(T("要連哪一台電腦？", "Which PC?"))
                 .setItems(names, (d, w) -> hub.choose(pcs.get(w)))
-                .setNegativeButton("取消", null)
+                .setNegativeButton(T("取消", "Cancel"), null)
                 .show();
     }
 

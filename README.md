@@ -17,6 +17,7 @@
 - **自動找到對方：** 同一個 Wi-Fi 下打開就連上，找不到時可以手動輸入 IP
 - **USB 線一插就配對：** 手機用傳輸線接電腦、開「USB 網路共用」，自動配對、不用按任何確認；配對一次後拔掉線改用 Wi-Fi 也會自動連。沒有 Wi-Fi 的地方也能傳
 - **Wi-Fi 第一次連線要在電腦按「允許」：** 同一個網路裡的陌生手機不能亂傳
+- **中英文介面：** 跟著系統語言自動切換
 - **超輕量：** Android App 約 40 KB（純 Java、沒有任何第三方函式庫），電腦版是單一個 exe
 - **方便的入口：**
   - 手機：相簿或任何 App 按「分享 → 口袋快傳」
@@ -91,6 +92,8 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 
 ## English
 
+<p align="center"><img src="docs/screenshot-pc-en.png" width="420" alt="PocketDrop Windows app (English)"></p>
+
 **PocketDrop** sends files and text between your Android phone and your PC over the same Wi-Fi, or over a single USB cable. There's no account and no cloud, and the Android app is only about 40 KB (plain Java, zero dependencies).
 
 - Two-way file transfer, including whole folders. Text you receive is copied to the clipboard automatically.
@@ -101,7 +104,8 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - The PC app shows a QR code so a phone can download the APK straight from the PC.
 
 **Download** `PocketDrop.exe` (Windows) and `PocketDrop.apk` (Android 10+) from [Releases](../../releases).
-Allow the Windows firewall prompt the first time the PC app starts. Tick "Public networks" too if you want to use USB, because Windows treats USB tethering as a public network. The UI is currently in Traditional Chinese.
+The UI switches between English and Chinese to match your system language.
+Allow the Windows firewall prompt the first time the PC app starts. Tick "Public networks" too if you want to use USB, because Windows treats USB tethering as a public network.
 
 **Security:** traffic is plain HTTP on your LAN and is not encrypted, so only use it on networks you trust.
 

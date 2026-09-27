@@ -44,7 +44,31 @@ try:
 except Exception:
     qrcode = None
 
-APP_NAME = "口袋快傳"
+
+def detect_lang():
+    """系統是中文就用中文介面，其他一律英文。POCKETDROP_LANG=zh/en 可以強制指定。"""
+    forced = os.environ.get("POCKETDROP_LANG", "").lower()
+    if forced in ("zh", "en"):
+        return forced
+    if IS_WINDOWS:
+        try:
+            # 語言 ID 的低 10 位元是主要語言，0x04 = 中文
+            return "zh" if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x04 else "en"
+        except Exception:
+            pass
+    loc = (os.environ.get("LC_ALL") or os.environ.get("LANG") or "").lower()
+    return "zh" if loc.startswith("zh") else "en"
+
+
+ZH = detect_lang() == "zh"
+
+
+def T(zh, en):
+    """介面文字：中文系統顯示第一個，其他顯示第二個（英文）。"""
+    return zh if ZH else en
+
+
+APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
 HTTP_PORT = int(os.environ.get("POCKETDROP_PORT", "47850"))  # 改埠號只給測試用，手機 App 固定連 47850
 UDP_PORT = 47852
@@ -122,7 +146,7 @@ def safe_name(name):
     name = os.path.basename(str(name).replace("\\", "/"))
     name = "".join("_" if (c in '<>:"/\\|?*' or ord(c) < 32) else c for c in name).strip().rstrip(". ")
     if not name:
-        name = "未命名"
+        name = T("未命名", "untitled")
     if name.split(".")[0].upper() in _RESERVED:
         name = "_" + name
     if len(name) > 180:
@@ -265,7 +289,7 @@ class Hub:
         self.seen = {}  # 手機 id -> 最後一次來的時間
         self.pair_lock = threading.Lock()  # 一次只問一支手機
         self.file_lock = threading.Lock()
-        self.pc_name = socket.gethostname() or "電腦"
+        self.pc_name = socket.gethostname() or T("電腦", "PC")
 
     def emit(self, *event):
         self.events.put(event)
@@ -304,7 +328,7 @@ class Hub:
     def online_names(self):
         now = time.time()
         devs = self.cfg.data["devices"]
-        return [devs[d].get("name", "手機") for d, t in list(self.seen.items()) if now - t < ONLINE_SECONDS and d in devs]
+        return [devs[d].get("name", T("手機", "Phone")) for d, t in list(self.seen.items()) if now - t < ONLINE_SECONDS and d in devs]
 
     # ---- 電腦 → 手機的排隊
     def add_files(self, files):
@@ -379,21 +403,38 @@ class Hub:
         return path
 
 
-PAGE = """<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>口袋快傳</title>
+# 手機掃 QR code 打開的下載頁；語言跟著手機瀏覽器（Accept-Language）走
+PAGE = """<!doctype html><html lang="%LANG%"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>%TITLE%</title>
 <style>body{font-family:system-ui,sans-serif;background:#f4f6fc;color:#1f2a3d;margin:0;padding:20px}
 .card{background:#fff;border-radius:18px;padding:26px;max-width:420px;margin:30px auto;box-shadow:0 2px 14px rgba(26,38,86,.08);text-align:center}
 h1{margin:4px 0;color:#1a2656}p{color:#6b7688}
 a.btn{display:block;background:#3558d4;color:#fff;text-decoration:none;padding:16px;border-radius:12px;font-size:18px;font-weight:bold;margin:22px 0}
 ol{text-align:left;line-height:1.9;color:#1f2a3d;padding-left:22px}</style></head>
-<body><div class="card"><h1>口袋快傳</h1><p>手機跟電腦互傳檔案</p>%BODY%</div></body></html>"""
+<body><div class="card"><h1>%TITLE%</h1><p>%SUB%</p>%BODY%</div></body></html>"""
 
-PAGE_OK = """<a class="btn" href="/PocketDrop.apk">下載 Android App</a>
+PAGE_TEXT = {
+    "zh": {"LANG": "zh-Hant", "TITLE": "口袋快傳", "SUB": "手機跟電腦互傳檔案",
+           "OK": """<a class="btn" href="/PocketDrop.apk">下載 Android App</a>
 <ol><li>下載完打開 <b>PocketDrop.apk</b></li>
 <li>手機問要不要允許安裝，選「允許／設定 → 允許這個來源」</li>
-<li>裝好打開口袋快傳，再到電腦上按「允許」就連上了</li></ol>"""
+<li>裝好打開口袋快傳，再到電腦上按「允許」就連上了</li></ol>""",
+           "MISSING": "<p>電腦上找不到 PocketDrop.apk，請把它放在口袋快傳程式的資料夾裡。</p>"},
+    "en": {"LANG": "en", "TITLE": "PocketDrop", "SUB": "Send files between your phone and PC",
+           "OK": """<a class="btn" href="/PocketDrop.apk">Download Android app</a>
+<ol><li>When the download finishes, open <b>PocketDrop.apk</b></li>
+<li>If the phone asks, allow installing apps from this source</li>
+<li>Open PocketDrop, then click "Allow" on the PC</li></ol>""",
+           "MISSING": "<p>PocketDrop.apk was not found on the PC. Put it in the same folder as the PocketDrop program.</p>"},
+}
 
-PAGE_MISSING = "<p>電腦上找不到 PocketDrop.apk，請把它放在口袋快傳程式的資料夾裡。</p>"
+
+def download_page(accept_language):
+    t = PAGE_TEXT["zh" if "zh" in (accept_language or "").lower() else "en"]
+    html = PAGE.replace("%BODY%", t["OK"] if os.path.exists(APK_PATH) else t["MISSING"])
+    for k in ("LANG", "TITLE", "SUB"):
+        html = html.replace(f"%{k}%", t[k])
+    return html
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -470,7 +511,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.parse()
         try:
             if self.route == "/":
-                html = PAGE.replace("%BODY%", PAGE_OK if os.path.exists(APK_PATH) else PAGE_MISSING)
+                html = download_page(self.headers.get("Accept-Language"))
                 return self.reply(200, body=html.encode("utf-8"), ctype="text/html; charset=utf-8")
             if self.route == "/PocketDrop.apk":
                 return self.send_apk()
@@ -560,7 +601,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.upload(did)
             if self.route == "/api/text":
                 text = self.read_body(2_000_000).decode("utf-8", "replace")
-                self.hub.emit("text_in", dev.get("name", "手機"), text)
+                self.hub.emit("text_in", dev.get("name", T("手機", "Phone")), text)
                 return self.reply(200, {"ok": True})
             if self.route == "/api/done":
                 self.read_body(1024)
@@ -579,7 +620,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         但如果是用 USB 線插在這台電腦上（走 USB 網路共用進來的），代表人就在電腦前面，直接配對。"""
         self.read_body(4096)
         did = self.headers.get("X-Device-Id", "").strip()[:64]
-        name = urllib.parse.unquote_plus(self.headers.get("X-Device-Name", "")).strip()[:40] or "手機"
+        name = urllib.parse.unquote_plus(self.headers.get("X-Device-Name", "")).strip()[:40] or T("手機", "Phone")
         if not did:
             return self.deny(400, "no id")
         devices = self.hub.cfg.data["devices"]
@@ -592,7 +633,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if dev is None:
                     if is_usb_peer(self.client_address[0]):
                         dev = self.hub.add_device(did, name)
-                        self.hub.emit("log", "✓", f"「{name}」用 USB 線接上，已自動配對（之後改用 Wi-Fi 也會自動連）", "ok")
+                        self.hub.emit("log", "✓", T(f"「{name}」用 USB 線接上，已自動配對（之後改用 Wi-Fi 也會自動連）", f"\"{name}\" was connected by USB cable and paired automatically (it will also reconnect over Wi-Fi)"), "ok")
                     elif not self.hub.ask_pair(name):
                         return self.reply(403, {"ok": False, "error": "denied"})
                     else:
@@ -671,7 +712,7 @@ def udp_loop(hub):
     try:
         s.bind(("" if BIND_HOST == "0.0.0.0" else BIND_HOST, UDP_PORT))
     except OSError:
-        hub.emit("log", "", "自動搜尋用的連接埠被占用了，手機可能要手動輸入 IP", "bad")
+        hub.emit("log", "", T("自動搜尋用的連接埠被占用了，手機可能要手動輸入 IP", "The auto-discovery port is in use, so phones may need to enter this PC's IP manually"), "bad")
         return
     while True:
         try:
@@ -754,7 +795,7 @@ class App:
         body.pack(fill="both", expand=True, padx=px(14), pady=px(12))
 
         # 傳到手機
-        card, box = self.card(body, "傳到手機")
+        card, box = self.card(body, T("傳到手機", "Send to phone"))
         card.pack(fill="x")
         self.drop = tk.Canvas(box, height=px(112), bg=CARD, highlightthickness=0, cursor="hand2")
         self.drop.pack(fill="x")
@@ -763,7 +804,7 @@ class App:
         row = tk.Frame(box, bg=CARD)
         row.pack(fill="x", pady=(px(10), 0))
         # 按鈕要先放，不然輸入框預設的寬度會把它擠出視窗
-        FlatButton(row, "傳文字", self.send_text).pack(side="right", padx=(px(10), 0), anchor="n")
+        FlatButton(row, T("傳文字", "Send text"), self.send_text).pack(side="right", padx=(px(10), 0), anchor="n")
         self.text_box = tk.Text(row, width=10, height=3, wrap="word", font=(FONT, 10), bg=FIELD, fg=TEXT, relief="flat",
                                 highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT,
                                 padx=px(8), pady=px(6), insertbackground=TEXT)
@@ -771,7 +812,7 @@ class App:
         self.text_box.bind("<Control-Return>", lambda e: (self.send_text(), "break")[1])
 
         # 紀錄
-        card, box = self.card(body, "紀錄")
+        card, box = self.card(body, T("紀錄", "Activity"))
         card.pack(fill="both", expand=True, pady=(px(12), 0))
         self.prog = tk.Frame(box, bg=CARD)
         self.prog_label = tk.Label(self.prog, text="", bg=CARD, fg=TEXT, font=(FONT, 9), anchor="w")
@@ -799,9 +840,9 @@ class App:
         # 下方：接收資料夾、其他
         bottom = tk.Frame(body, bg=BG)
         bottom.pack(fill="x", pady=(px(10), 0))
-        FlatButton(bottom, "打開接收資料夾", self.open_recv, primary=False, small=True).pack(side="left")
-        FlatButton(bottom, "更改…", self.change_recv, primary=False, small=True).pack(side="left", padx=(px(6), 0))
-        FlatButton(bottom, "手機安裝 App", self.show_install, primary=False, small=True).pack(side="right")
+        FlatButton(bottom, T("打開接收資料夾", "Open received folder"), self.open_recv, primary=False, small=True).pack(side="left")
+        FlatButton(bottom, T("更改…", "Change…"), self.change_recv, primary=False, small=True).pack(side="left", padx=(px(6), 0))
+        FlatButton(bottom, T("手機安裝 App", "Install phone app"), self.show_install, primary=False, small=True).pack(side="right")
         bottom2 = tk.Frame(body, bg=BG)
         bottom2.pack(fill="x", pady=(px(6), 0))
         self.recv_label = tk.Label(bottom2, text="", bg=BG, fg=MUTED, font=(FONT, 9), anchor="w")
@@ -810,9 +851,9 @@ class App:
         bottom3 = tk.Frame(body, bg=BG)
         bottom3.pack(fill="x", pady=(px(2), 0))
         self.auto_copy = tk.BooleanVar(value=bool(self.cfg.data.get("auto_copy", True)))
-        tk.Checkbutton(bottom3, text="收到文字自動複製", variable=self.auto_copy, command=self.save_auto_copy,
+        tk.Checkbutton(bottom3, text=T("收到文字自動複製", "Auto-copy received text"), variable=self.auto_copy, command=self.save_auto_copy,
                        bg=BG, fg=MUTED, activebackground=BG, font=(FONT, 9), selectcolor=CARD).pack(side="left")
-        unpair = tk.Label(bottom3, text="管理配對", bg=BG, fg=ACCENT, font=(FONT, 9, "underline"), cursor="hand2")
+        unpair = tk.Label(bottom3, text=T("管理配對", "Paired phones"), bg=BG, fg=ACCENT, font=(FONT, 9, "underline"), cursor="hand2")
         unpair.pack(side="right")
         unpair.bind("<Button-1>", lambda e: self.manage_pairs())
 
@@ -823,7 +864,7 @@ class App:
             self.drop.dnd_bind("<<DropEnter>>", lambda e: self.set_hover(True))
             self.drop.dnd_bind("<<DropLeave>>", lambda e: self.set_hover(False))
 
-        self.log_line("", "開好了。手機打開口袋快傳 App 就會自動連上；還沒裝的話按右下角「手機安裝 App」。", "muted")
+        self.log_line("", T("開好了。手機打開口袋快傳 App 就會自動連上；還沒裝的話按右下角「手機安裝 App」。", "Ready. Open PocketDrop on your phone and it connects automatically. No app yet? Click \"Install phone app\" at the bottom right."), "muted")
 
     def card(self, parent, title):
         outer = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER)
@@ -839,9 +880,9 @@ class App:
         m = px(2)
         c.create_rectangle(m, m, w - m, h - m, outline=ACCENT if self.drop_hover else ACCENT_LIGHT,
                            dash=(4, 3), fill=ACCENT_SOFT if self.drop_hover else "#fafbff")
-        main = "把檔案或資料夾拖到這裡" if self.dnd_ok else "點這裡選擇檔案"
+        main = T("把檔案或資料夾拖到這裡", "Drop files or folders here") if self.dnd_ok else T("點這裡選擇檔案", "Click to choose files")
         c.create_text(w / 2, h / 2 - px(12), text=main, font=(FONT, 12, "bold"), fill=ACCENT)
-        sub = "也可以點一下選檔案・手機 App 開著就會自動收下" if self.dnd_ok else "手機 App 開著就會自動收下"
+        sub = T("也可以點一下選檔案・手機 App 開著就會自動收下", "or click to choose · the phone receives them while the app is open") if self.dnd_ok else T("手機 App 開著就會自動收下", "The phone receives them while the app is open")
         c.create_text(w / 2, h / 2 + px(14), text=sub, font=(FONT, 9), fill=MUTED)
 
     def set_hover(self, on):
@@ -883,7 +924,7 @@ class App:
                 try:
                     self.handle(event)
                 except Exception as e:  # 單一事件出錯不要讓整個畫面停掉
-                    self.log_line("✗", f"內部錯誤：{e}", "bad")
+                    self.log_line("✗", T(f"內部錯誤：{e}", f"Internal error: {e}"), "bad")
         except queue.Empty:
             pass
         self.root.after(100, self.pump)
@@ -896,11 +937,11 @@ class App:
             self.on_text_in(*event[1:])
         elif kind == "delivered":
             item, ok = event[1], event[2]
-            label = "文字" if item["type"] == "text" else item["name"]
+            label = T("文字", "text") if item["type"] == "text" else item["name"]
             if ok:
-                self.log_line("✓", f"手機已收到：{label}", "ok")
+                self.log_line("✓", T(f"手機已收到：{label}", f"Phone received: {label}"), "ok")
             else:
-                self.log_line("✗", f"手機沒收到：{label}", "bad")
+                self.log_line("✗", T(f"手機沒收到：{label}", f"Phone did not receive: {label}"), "bad")
         elif kind == "pair":
             self.on_pair(*event[1:])
         elif kind == "local_send":
@@ -922,11 +963,11 @@ class App:
             self.active.pop(tid, None)
             if direction == "in":
                 if state == "ok":
-                    self.log_line("↓", f"收到：{name}（{fmt_size(done)}）", "ok",
-                                  links=[("打開", lambda p=path: self.safe_open(p)),
-                                         ("在資料夾中顯示", lambda p=path: self.safe_reveal(p))])
+                    self.log_line("↓", T(f"收到：{name}（{fmt_size(done)}）", f"Received: {name} ({fmt_size(done)})"), "ok",
+                                  links=[(T("打開", "Open"), lambda p=path: self.safe_open(p)),
+                                         (T("在資料夾中顯示", "Show in folder"), lambda p=path: self.safe_reveal(p))])
                 else:
-                    self.log_line("✗", f"沒收完：{name}（傳到一半斷掉了）", "bad")
+                    self.log_line("✗", T(f"沒收完：{name}（傳到一半斷掉了）", f"Incomplete: {name} (the connection dropped)"), "bad")
         self.update_progress()
 
     def update_progress(self):
@@ -936,14 +977,14 @@ class App:
         tid = max(self.active)
         direction, name, done, total, t0 = self.active[tid]
         speed = done / max(time.time() - t0, 0.001)
-        verb = "↓ 從手機接收" if direction == "in" else "↑ 傳到手機"
-        extra = f"（還有 {len(self.active) - 1} 個）" if len(self.active) > 1 else ""
+        verb = T("↓ 從手機接收", "↓ Receiving from phone") if direction == "in" else T("↑ 傳到手機", "↑ Sending to phone")
+        extra = T(f"（還有 {len(self.active) - 1} 個）", f"(+{len(self.active) - 1} more)") if len(self.active) > 1 else ""
         if total and total > 0:
             pct = min(done * 100 // total, 100)
-            text = f"{verb}：{name}   {pct}%   {fmt_size(done)} / {fmt_size(total)}   {fmt_size(speed)}/s {extra}"
+            text = T(f"{verb}：{name}   {pct}%   {fmt_size(done)} / {fmt_size(total)}   {fmt_size(speed)}/s {extra}", f"{verb}: {name}   {pct}%   {fmt_size(done)} / {fmt_size(total)}   {fmt_size(speed)}/s {extra}")
             self.prog_bar.configure(value=done * 1000 // total)
         else:
-            text = f"{verb}：{name}   {fmt_size(done)}   {fmt_size(speed)}/s {extra}"
+            text = T(f"{verb}：{name}   {fmt_size(done)}   {fmt_size(speed)}/s {extra}", f"{verb}: {name}   {fmt_size(done)}   {fmt_size(speed)}/s {extra}")
             self.prog_bar.configure(value=0)
         self.prog_label.configure(text=text)
         if not self.prog.winfo_ismapped():
@@ -954,26 +995,26 @@ class App:
         if self.auto_copy.get():
             self.copy(text)
             copied = True
-        self.log_line("↓", f"{dev_name} 傳來文字" + ("（已複製）" if copied else ""), "ok",
-                      links=[("複製", lambda t=text: (self.copy(t), self.flash_status("已複製")))])
+        self.log_line("↓", T(f"{dev_name} 傳來文字", f"Text from {dev_name}") + (T("（已複製）", " (copied)") if copied else ""), "ok",
+                      links=[(T("複製", "Copy"), lambda t=text: (self.copy(t), self.flash_status(T("已複製", "Copied"))))])
         self.log_quote(text)
 
     def on_pair(self, name, answer, done):
         self.show_window()
         ok = messagebox.askyesno(
             APP_NAME,
-            f"手機「{name}」想連到這台電腦。\n\n允許之後，這支手機就能跟電腦互傳檔案，之後不用再問。\n要允許嗎？",
+            T(f"手機「{name}」想連到這台電腦。\n\n允許之後，這支手機就能跟電腦互傳檔案，之後不用再問。\n要允許嗎？", f"The phone \"{name}\" wants to connect to this PC.\n\nOnce allowed, it can exchange files with this PC without asking again.\nAllow it?"),
             parent=self.root)
         answer["ok"] = ok
         done.set()
         if ok:
-            self.log_line("✓", f"已允許「{name}」連線", "ok")
+            self.log_line("✓", T(f"已允許「{name}」連線", f"Allowed \"{name}\""), "ok")
         else:
-            self.log_line("", f"拒絕了「{name}」", "muted")
+            self.log_line("", T(f"拒絕了「{name}」", f"Declined \"{name}\""), "muted")
 
     # ---- 按鈕
     def choose_files(self):
-        paths = filedialog.askopenfilenames(parent=self.root, title="選擇要傳到手機的檔案")
+        paths = filedialog.askopenfilenames(parent=self.root, title=T("選擇要傳到手機的檔案", "Choose files to send to the phone"))
         if paths:
             self.queue_paths(paths)
 
@@ -999,12 +1040,12 @@ class App:
         items = self.hub.add_files(files)
         if len(items) <= 5:
             for it in items:
-                self.log_line("↑", f"排隊傳到手機：{it['name']}（{fmt_size(it['size'])}）")
+                self.log_line("↑", T(f"排隊傳到手機：{it['name']}（{fmt_size(it['size'])}）", f"Queued for phone: {it['name']} ({fmt_size(it['size'])})"))
         else:
             total = sum(it["size"] for it in items)
-            self.log_line("↑", f"排隊傳到手機：{len(items)} 個檔案，共 {fmt_size(total)}")
+            self.log_line("↑", T(f"排隊傳到手機：{len(items)} 個檔案，共 {fmt_size(total)}", f"Queued for phone: {len(items)} files, {fmt_size(total)} in total"))
         if not self.hub.online_names():
-            self.log_line("", "手機還沒連上：打開手機上的口袋快傳就會自動收下", "warn")
+            self.log_line("", T("手機還沒連上：打開手機上的口袋快傳就會自動收下", "Phone not connected yet. Open PocketDrop on the phone and it will receive them"), "warn")
 
     def send_text(self):
         text = self.text_box.get("1.0", "end-1c")
@@ -1012,10 +1053,10 @@ class App:
             return
         self.hub.add_text(text)
         self.text_box.delete("1.0", "end")
-        self.log_line("↑", "排隊傳文字到手機")
+        self.log_line("↑", T("排隊傳文字到手機", "Queued text for phone"))
         self.log_quote(text)
         if not self.hub.online_names():
-            self.log_line("", "手機還沒連上：打開手機上的口袋快傳就會自動收下", "warn")
+            self.log_line("", T("手機還沒連上：打開手機上的口袋快傳就會自動收下", "Phone not connected yet. Open PocketDrop on the phone and it will receive them"), "warn")
 
     def copy(self, text):
         self.root.clipboard_clear()
@@ -1025,7 +1066,7 @@ class App:
         try:
             open_path(path)
         except OSError:
-            messagebox.showwarning(APP_NAME, "打不開這個檔案（可能被移走或刪掉了）。", parent=self.root)
+            messagebox.showwarning(APP_NAME, T("打不開這個檔案（可能被移走或刪掉了）。", "Can't open this file (it may have been moved or deleted)."), parent=self.root)
 
     def safe_reveal(self, path):
         try:
@@ -1039,7 +1080,7 @@ class App:
         open_path(folder)
 
     def change_recv(self):
-        folder = filedialog.askdirectory(parent=self.root, title="手機傳來的檔案要存在哪裡？",
+        folder = filedialog.askdirectory(parent=self.root, title=T("手機傳來的檔案要存在哪裡？", "Where should files from the phone be saved?"),
                                          initialdir=self.cfg.data["recv_dir"])
         if folder:
             self.cfg.data["recv_dir"] = os.path.normpath(folder)
@@ -1050,7 +1091,7 @@ class App:
         folder = self.cfg.data["recv_dir"]
         if len(folder) > 48:
             folder = "…" + folder[-47:]
-        self.recv_label.configure(text=f"手機傳來的檔案存在：{folder}")
+        self.recv_label.configure(text=T(f"手機傳來的檔案存在：{folder}", f"Files from the phone go to: {folder}"))
 
     def save_auto_copy(self):
         self.cfg.data["auto_copy"] = bool(self.auto_copy.get())
@@ -1059,27 +1100,27 @@ class App:
     def manage_pairs(self):
         devs = self.cfg.data["devices"]
         if not devs:
-            messagebox.showinfo(APP_NAME, "目前還沒有配對過的手機。", parent=self.root)
+            messagebox.showinfo(APP_NAME, T("目前還沒有配對過的手機。", "No phones are paired yet."), parent=self.root)
             return
-        names = "、".join(d.get("name", "手機") for d in devs.values())
-        if messagebox.askyesno(APP_NAME, f"已配對的手機：{names}\n\n要全部取消配對嗎？\n之後手機要連線時，電腦會再問一次。",
+        names = T("、", ", ").join(d.get("name", T("手機", "Phone")) for d in devs.values())
+        if messagebox.askyesno(APP_NAME, T(f"已配對的手機：{names}\n\n要全部取消配對嗎？\n之後手機要連線時，電腦會再問一次。", f"Paired phones: {names}\n\nUnpair all of them?\nThe PC will ask again the next time a phone connects."),
                                parent=self.root):
             with self.cfg.lock:
                 devs.clear()
             self.cfg.save()
             self.hub.seen.clear()
-            self.log_line("", "已取消所有手機的配對", "muted")
+            self.log_line("", T("已取消所有手機的配對", "Unpaired all phones"), "muted")
 
     def show_install(self):
         url = f"http://{lan_ip()}:{HTTP_PORT}/"
         win = tk.Toplevel(self.root)
-        win.title("手機安裝 App")
+        win.title(T("手機安裝 App", "Install phone app"))
         win.configure(bg=CARD)
         win.transient(self.root)
         win.resizable(False, False)
         box = tk.Frame(win, bg=CARD)
         box.pack(padx=px(24), pady=px(20))
-        tk.Label(box, text="用手機相機掃這個 QR code", bg=CARD, fg=TEXT, font=(FONT, 13, "bold")).pack()
+        tk.Label(box, text=T("用手機相機掃這個 QR code", "Scan this QR code with your phone camera"), bg=CARD, fg=TEXT, font=(FONT, 13, "bold")).pack()
         if qrcode:
             qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
             qr.add_data(url)
@@ -1093,15 +1134,15 @@ class App:
                 for x, on in enumerate(line):
                     if on:
                         canvas.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill=HEAD_BG, width=0)
-        tk.Label(box, text=f"或在手機瀏覽器輸入：{url}", bg=CARD, fg=ACCENT, font=(FONT, 10)).pack()
-        steps = ("1. 手機跟電腦要連同一個 Wi-Fi\n"
-                 "2. 打開網頁後按「下載 Android App」，下載完打開 PocketDrop.apk\n"
-                 "3. 手機問要不要允許安裝，選「允許」\n"
-                 "4. 裝好打開口袋快傳，電腦這邊按「允許」就連上了")
+        tk.Label(box, text=T(f"或在手機瀏覽器輸入：{url}", f"or open this in the phone's browser: {url}"), bg=CARD, fg=ACCENT, font=(FONT, 10)).pack()
+        steps = (T("1. 手機跟電腦要連同一個 Wi-Fi\n", "1. Connect the phone and this PC to the same Wi-Fi\n")
+                 + T("2. 打開網頁後按「下載 Android App」，下載完打開 PocketDrop.apk\n", "2. Tap \"Download Android app\", then open PocketDrop.apk\n")
+                 + T("3. 手機問要不要允許安裝，選「允許」\n", "3. If the phone asks whether to allow the install, choose \"Allow\"\n")
+                 + T("4. 裝好打開口袋快傳，電腦這邊按「允許」就連上了", "4. Open PocketDrop, then click \"Allow\" on this PC"))
         tk.Label(box, text=steps, bg=CARD, fg=MUTED, font=(FONT, 9), justify="left").pack(pady=(px(12), 0), anchor="w")
         if not os.path.exists(APK_PATH):
-            tk.Label(box, text="注意：程式資料夾裡找不到 PocketDrop.apk", bg=CARD, fg=BAD_COLOR, font=(FONT, 9)).pack(pady=(px(8), 0))
-        FlatButton(box, "關閉", win.destroy).pack(pady=(px(14), 0))
+            tk.Label(box, text=T("注意：程式資料夾裡找不到 PocketDrop.apk", "Note: PocketDrop.apk was not found next to this program"), bg=CARD, fg=BAD_COLOR, font=(FONT, 9)).pack(pady=(px(8), 0))
+        FlatButton(box, T("關閉", "Close"), win.destroy).pack(pady=(px(14), 0))
         # 放在主視窗正中間
         win.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
@@ -1128,25 +1169,25 @@ class App:
         if time.time() - self.ip_checked > 5:
             self.ip = lan_ip()
             self.ip_checked = time.time()
-        self.ip_label.configure(text=f"本機 IP：{self.ip}（手機找不到電腦時，在 App 裡輸入這個）")
+        self.ip_label.configure(text=T(f"本機 IP：{self.ip}（手機找不到電腦時，在 App 裡輸入這個）", f"This PC's IP: {self.ip} (type it in the app if needed)"))
         self.root.after(1000, self.tick)
 
     def refresh_status(self):
         names = self.hub.online_names()
         pending = self.hub.pending_count()
         if names:
-            text, color = "● 已連線：" + "、".join(dict.fromkeys(names)), HEAD_ONLINE
+            text, color = T("● 已連線：", "● Connected: ") + T("、", ", ").join(dict.fromkeys(names)), HEAD_ONLINE
         else:
-            text, color = "○ 等待手機連線（手機打開口袋快傳就會自動連上）", HEAD_TEXT
+            text, color = T("○ 等待手機連線（手機打開口袋快傳就會自動連上）", "○ Waiting for a phone (open PocketDrop on the phone to connect)"), HEAD_TEXT
         if pending:
-            text += f"　・{pending} 個等手機接收"
+            text += T(f"　・{pending} 個等手機接收", f"  · {pending} waiting for the phone")
         self.status.configure(text=text, fg=color)
 
     def on_close(self):
         pending = self.hub.pending_count()
         busy = len(self.active)
         if pending or busy:
-            msg = f"還有 {pending + busy} 個東西沒傳完，關掉就會取消。\n確定要關掉嗎？"
+            msg = T(f"還有 {pending + busy} 個東西沒傳完，關掉就會取消。\n確定要關掉嗎？", f"{pending + busy} transfers aren't finished and will be cancelled.\nClose anyway?")
             if not messagebox.askyesno(APP_NAME, msg, parent=self.root):
                 return
         self.root.destroy()
@@ -1180,7 +1221,7 @@ def main():
             return
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror(APP_NAME, f"連接埠 {HTTP_PORT} 被別的程式占用了，口袋快傳沒辦法開始。")
+        messagebox.showerror(APP_NAME, T(f"連接埠 {HTTP_PORT} 被別的程式占用了，口袋快傳沒辦法開始。", f"Port {HTTP_PORT} is used by another program, so PocketDrop can't start."))
         return
     threading.Thread(target=server.serve_forever, daemon=True).start()
     threading.Thread(target=udp_loop, args=(hub,), daemon=True).start()

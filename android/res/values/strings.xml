@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">口袋快傳</string>
-    <string name="share_label">傳到電腦</string>
+    <string name="app_name">PocketDrop</string>
+    <string name="share_label">Send to PC</string>
     <color name="icon_bg">#3558D4</color>
 </resources>
