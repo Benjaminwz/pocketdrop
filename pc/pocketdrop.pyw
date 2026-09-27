@@ -289,6 +289,8 @@ class Hub:
         self.next_id = secrets.randbelow(900000) * 1000 + 1
         self.next_tid = 1
         self.seen = {}  # 手機 id -> 最後一次來的時間
+        self.last_ip = {}  # 手機 id -> 最後一次從哪個 IP 來
+        self.via_usb = {}  # 手機 id -> 是不是走 USB 線
         self.pair_lock = threading.Lock()  # 一次只問一支手機
         self.file_lock = threading.Lock()
         self.pc_name = socket.gethostname() or T("電腦", "PC")
@@ -303,17 +305,21 @@ class Hub:
             return self.next_tid
 
     # ---- 配對
-    def find_device(self, key):
+    def find_device(self, key, ip=None):
         if not key:
             return None, None
         for did, dev in list(self.cfg.data["devices"].items()):
             if secrets.compare_digest(str(dev.get("key", "")).encode(), key.encode("utf-8", "replace")):
-                self.touch(did)
+                self.touch(did, ip)
                 return did, dev
         return None, None
 
-    def touch(self, did):
+    def touch(self, did, ip=None):
         self.seen[did] = time.time()
+        if ip and self.last_ip.get(did) != ip:
+            # IP 換了才重新判斷是不是走 USB 線（查一次要開 PowerShell，不能每個請求都查）
+            self.last_ip[did] = ip
+            self.via_usb[did] = is_usb_peer(ip)
 
     def ask_pair(self, name):
         answer = {"ok": False}
@@ -338,13 +344,22 @@ class Hub:
         self.cfg.save()
         return self.cfg.data["devices"][did]
 
-    def online_names(self):
+    def online_ids(self):
         now = time.time()
         devs = self.cfg.data["devices"]
-        return [devs[d].get("name", T("手機", "Phone")) for d, t in list(self.seen.items()) if now - t < ONLINE_SECONDS and d in devs]
+        return [d for d, t in list(self.seen.items()) if now - t < ONLINE_SECONDS and d in devs]
+
+    def device_label(self, did):
+        name = self.cfg.data["devices"].get(did, {}).get("name", T("手機", "Phone"))
+        return name + (T("（USB 線）", " (USB)") if self.via_usb.get(did) else "")
+
+    def online_names(self):
+        return [self.device_label(d) for d in self.online_ids()]
 
     # ---- 電腦 → 手機的排隊
-    def add_files(self, files):
+    # 每一項都記著 targets（要給哪幾支手機；None = 還沒配對任何手機，第一支連上的拿走）
+    # 和 got（哪幾支已經收過），全部收到才從排隊裡拿掉。這樣一份檔案可以同時傳給好幾支手機。
+    def add_files(self, files, targets=None):
         added = []
         with self.cond:
             for path, name in files:
@@ -352,44 +367,54 @@ class Hub:
                     size = os.path.getsize(path)
                 except OSError:
                     continue
-                item = {"id": self.next_id, "type": "file", "name": name.replace("\\", "/"), "size": size, "path": path}
+                item = {"id": self.next_id, "type": "file", "name": name.replace("\\", "/"), "size": size, "path": path,
+                        "targets": set(targets) if targets else None, "got": set()}
                 self.next_id += 1
                 self.outbox.append(item)
                 added.append(item)
             self.cond.notify_all()
         return added
 
-    def add_text(self, text):
+    def add_text(self, text, targets=None):
         with self.cond:
-            item = {"id": self.next_id, "type": "text", "text": text}
+            item = {"id": self.next_id, "type": "text", "text": text,
+                    "targets": set(targets) if targets else None, "got": set()}
             self.next_id += 1
             self.outbox.append(item)
             self.cond.notify_all()
         return item
 
-    def wait_items(self, wait, after=0):
+    @staticmethod
+    def _wanted(item, did):
+        return (item["targets"] is None or did in item["targets"]) and did not in item["got"]
+
+    def wait_items(self, wait, after=0, did=None):
         """手機來問「有東西給我嗎」：有就馬上回，沒有就等一下（最多 wait 秒），有新東西時立刻回。
         after：只要編號比它新的（網頁版用：已經顯示過、等使用者點下載的，不要一直重送）。"""
         deadline = time.time() + wait
         with self.cond:
             while True:
-                items = [it for it in self.outbox if it["id"] > after]
+                items = [it for it in self.outbox if it["id"] > after and self._wanted(it, did)]
                 left = deadline - time.time()
                 if items or left <= 0:
-                    return [{k: v for k, v in it.items() if k != "path"} for it in items[:50]]
+                    return [{k: v for k, v in it.items() if k in ("id", "type", "name", "size", "text")}
+                            for it in items[:50]]
                 self.cond.wait(left)
 
-    def get_item(self, item_id):
+    def get_item(self, item_id, did=None):
         with self.cond:
-            return next((it for it in self.outbox if it["id"] == item_id), None)
+            return next((it for it in self.outbox if it["id"] == item_id and (did is None or self._wanted(it, did))), None)
 
-    def finish_item(self, item_id, ok):
+    def finish_item(self, item_id, ok, did):
+        """某支手機收完（或放棄）了一項；要給的手機都收過了才從排隊拿掉。"""
         with self.cond:
-            item = self.get_item(item_id)
-            if item:
+            item = self.get_item(item_id, did)
+            if not item:
+                return
+            item["got"].add(did)
+            if item["targets"] is None or item["targets"] <= item["got"]:
                 self.outbox.remove(item)
-        if item:
-            self.emit("delivered", item, ok)
+        self.emit("delivered", item, ok, did)
 
     def pending_count(self):
         with self.cond:
@@ -485,7 +510,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def device(self):
         # 網頁版的下載連結沒辦法帶 header，所以鑰匙也可以放在網址的 k= 裡
-        return self.hub.find_device(self.headers.get("X-Key", "") or self.q.get("k", ""))
+        return self.hub.find_device(self.headers.get("X-Key", "") or self.q.get("k", ""), self.client_address[0])
 
     def redirect(self, location):
         self.send_response(302)
@@ -572,7 +597,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     after = int(self.q.get("after", "0"))
                 except ValueError:
                     after = 0
-                items = self.hub.wait_items(wait, after)
+                items = self.hub.wait_items(wait, after, did)
                 self.hub.touch(did)
                 return self.reply(200, {"items": items})
             if self.route == "/api/file":
@@ -600,7 +625,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def send_item_file(self, did):
         try:
-            item = self.hub.get_item(int(self.q.get("id", "0")))
+            item = self.hub.get_item(int(self.q.get("id", "0")), did)
         except ValueError:
             item = None
         if not item or item["type"] != "file":
@@ -638,7 +663,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         self.hub.emit("xfer", tid, "out", item["name"], sent, size, "run")
                 # 網頁版沒辦法知道下載完了沒，由電腦這邊送完就算數
                 if self.q.get("done") == "1" and sent == size:
-                    self.hub.finish_item(item["id"], True)
+                    self.hub.finish_item(item["id"], True, did)
             finally:
                 self.hub.emit("xfer", tid, "out", item["name"], sent, size, "end")
 
@@ -665,7 +690,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     item_id = int(self.q.get("id", "0"))
                 except ValueError:
                     item_id = 0
-                self.hub.finish_item(item_id, self.q.get("ok", "1") == "1")
+                self.hub.finish_item(item_id, self.q.get("ok", "1") == "1", did)
                 return self.reply(200, {"ok": True})
             self.deny(404, "not found")
         except Exception:
@@ -857,6 +882,10 @@ class App:
         # 傳到手機
         card, box = self.card(body, T("傳到手機", "Send to phone"))
         card.pack(fill="x")
+        # 配對了兩支以上的手機才會出現：勾選要傳給哪幾支（一對多）
+        self.target_row = tk.Frame(box, bg=CARD)
+        self.target_vars = {}
+        self.target_sig = None
         self.drop = tk.Canvas(box, height=px(112), bg=CARD, highlightthickness=0, cursor="hand2")
         self.drop.pack(fill="x")
         self.drop.bind("<Configure>", lambda e: self.draw_drop())
@@ -914,6 +943,8 @@ class App:
         tk.Checkbutton(bottom3, text=T("收到文字自動複製", "Auto-copy received text"), variable=self.auto_copy, command=self.save_auto_copy,
                        bg=BG, fg=MUTED, activebackground=BG, font=(FONT, 9), selectcolor=CARD).pack(side="left")
         unpair = tk.Label(bottom3, text=T("管理配對", "Paired phones"), bg=BG, fg=ACCENT, font=(FONT, 9, "underline"), cursor="hand2")
+        self.cancel_link = tk.Label(bottom3, text="", bg=BG, fg=ACCENT, font=(FONT, 9, "underline"), cursor="hand2")
+        self.cancel_link.bind("<Button-1>", lambda e: self.cancel_queue())
         unpair.pack(side="right")
         unpair.bind("<Button-1>", lambda e: self.manage_pairs())
 
@@ -996,12 +1027,13 @@ class App:
         elif kind == "text_in":
             self.on_text_in(*event[1:])
         elif kind == "delivered":
-            item, ok = event[1], event[2]
+            item, ok, did = event[1], event[2], event[3]
             label = T("文字", "text") if item["type"] == "text" else item["name"]
+            dev = self.hub.device_label(did)
             if ok:
-                self.log_line("✓", T(f"手機已收到：{label}", f"Phone received: {label}"), "ok")
+                self.log_line("✓", T(f"{dev} 已收到：{label}", f"{dev} received: {label}"), "ok")
             else:
-                self.log_line("✗", T(f"手機沒收到：{label}", f"Phone did not receive: {label}"), "bad")
+                self.log_line("✗", T(f"{dev} 沒收到：{label}", f"{dev} did not receive: {label}"), "bad")
         elif kind == "pair":
             self.on_pair(*event[1:])
         elif kind == "local_send":
@@ -1097,26 +1129,50 @@ class App:
                 files.append((p, os.path.basename(p)))
         if not files:
             return
-        items = self.hub.add_files(files)
+        targets = self.selected_targets()
+        if targets == set():
+            messagebox.showinfo(APP_NAME, T("請先在「傳給」勾選要傳給哪支手機。", "Tick at least one phone under \"Send to\" first."), parent=self.root)
+            return
+        items = self.hub.add_files(files, targets)
         if len(items) <= 5:
             for it in items:
                 self.log_line("↑", T(f"排隊傳到手機：{it['name']}（{fmt_size(it['size'])}）", f"Queued for phone: {it['name']} ({fmt_size(it['size'])})"))
         else:
             total = sum(it["size"] for it in items)
             self.log_line("↑", T(f"排隊傳到手機：{len(items)} 個檔案，共 {fmt_size(total)}", f"Queued for phone: {len(items)} files, {fmt_size(total)} in total"))
-        if not self.hub.online_names():
+        self.warn_offline(targets)
+
+    def selected_targets(self):
+        """要傳給哪幾支手機。沒配對過任何手機時回傳 None（第一支連上的拿走）。"""
+        devs = self.cfg.data["devices"]
+        if not devs:
+            return None
+        if len(devs) == 1:
+            return set(devs)
+        return {d for d in devs if d not in self.target_vars or self.target_vars[d].get()}
+
+    def warn_offline(self, targets):
+        online = set(self.hub.online_ids())
+        waiting = [self.hub.device_label(d) for d in (targets or ()) if d not in online]
+        if targets is None and not online:
             self.log_line("", T("手機還沒連上：打開手機上的口袋快傳就會自動收下", "Phone not connected yet. Open PocketDrop on the phone and it will receive them"), "warn")
+        elif waiting:
+            names = T("、", ", ").join(waiting)
+            self.log_line("", T(f"{names} 還沒連上：打開 App 或網頁版就會自動收下", f"{names} not connected yet. It will receive them when the app or web page opens"), "warn")
 
     def send_text(self):
         text = self.text_box.get("1.0", "end-1c")
         if not text.strip():
             return
-        self.hub.add_text(text)
+        targets = self.selected_targets()
+        if targets == set():
+            messagebox.showinfo(APP_NAME, T("請先在「傳給」勾選要傳給哪支手機。", "Tick at least one phone under \"Send to\" first."), parent=self.root)
+            return
+        self.hub.add_text(text, targets)
         self.text_box.delete("1.0", "end")
         self.log_line("↑", T("排隊傳文字到手機", "Queued text for phone"))
         self.log_quote(text)
-        if not self.hub.online_names():
-            self.log_line("", T("手機還沒連上：打開手機上的口袋快傳就會自動收下", "Phone not connected yet. Open PocketDrop on the phone and it will receive them"), "warn")
+        self.warn_offline(targets)
 
     def copy(self, text):
         self.root.clipboard_clear()
@@ -1167,6 +1223,7 @@ class App:
                                parent=self.root):
             with self.cfg.lock:
                 devs.clear()
+            self.hub.clear_outbox()
             self.cfg.save()
             self.hub.seen.clear()
             self.log_line("", T("已取消所有手機的配對", "Unpaired all phones"), "muted")
@@ -1228,6 +1285,7 @@ class App:
     # ---- 定時更新
     def tick(self):
         self.refresh_status()
+        self.refresh_targets()
         if self.active:
             self.update_progress()
         if time.time() - self.ip_checked > 5:
@@ -1235,6 +1293,36 @@ class App:
             self.ip_checked = time.time()
         self.ip_label.configure(text=T(f"本機 IP：{self.ip}（手機找不到電腦時，在 App 裡輸入這個）", f"This PC's IP: {self.ip} (type it in the app if needed)"))
         self.root.after(1000, self.tick)
+
+    def refresh_targets(self):
+        devs = self.cfg.data["devices"]
+        online = set(self.hub.online_ids())
+        sig = tuple((d, self.hub.device_label(d), d in online) for d in devs)
+        if sig == self.target_sig:
+            return
+        self.target_sig = sig
+        for w in self.target_row.winfo_children():
+            w.destroy()
+        if len(devs) < 2:
+            self.target_row.pack_forget()
+            return
+        tk.Label(self.target_row, text=T("傳給：", "Send to:"), bg=CARD, fg=TEXT, font=(FONT, 10, "bold")).pack(side="left", anchor="n")
+        grid = tk.Frame(self.target_row, bg=CARD)
+        grid.pack(side="left", fill="x")
+        for i, did in enumerate(devs):
+            var = self.target_vars.setdefault(did, tk.BooleanVar(value=True))
+            on = did in online
+            tk.Checkbutton(grid, text=("● " if on else "○ ") + self.hub.device_label(did), variable=var,
+                           bg=CARD, fg=OK_COLOR if on else MUTED, activebackground=CARD, selectcolor=CARD,
+                           font=(FONT, 10)).grid(row=i // 3, column=i % 3, sticky="w", padx=(px(4), 0))
+        if not self.target_row.winfo_ismapped():
+            self.target_row.pack(fill="x", pady=(0, px(8)), before=self.drop)
+
+    def cancel_queue(self):
+        n = self.hub.clear_outbox()
+        if n:
+            self.log_line("", T(f"已取消 {n} 個還沒傳給手機的東西", f"Cancelled {n} queued item(s)"), "muted")
+        self.refresh_status()
 
     def refresh_status(self):
         names = self.hub.online_names()
@@ -1245,6 +1333,11 @@ class App:
             text, color = T("○ 等待手機連線（手機打開口袋快傳就會自動連上）", "○ Waiting for a phone (open PocketDrop on the phone to connect)"), HEAD_TEXT
         if pending:
             text += T(f"　・{pending} 個等手機接收", f"  · {pending} waiting for the phone")
+            self.cancel_link.configure(text=T(f"取消排隊（{pending}）", f"Cancel queue ({pending})"))
+            if not self.cancel_link.winfo_ismapped():
+                self.cancel_link.pack(side="right", padx=(0, px(12)))
+        elif self.cancel_link.winfo_ismapped():
+            self.cancel_link.pack_forget()
         self.status.configure(text=text, fg=color)
 
     def on_close(self):

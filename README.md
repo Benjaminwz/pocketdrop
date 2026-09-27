@@ -13,9 +13,10 @@
 ## 特色
 
 - **雙向傳檔：** 手機 → 電腦、電腦 → 手機，資料夾也可以
+- **一對多：** 配對好幾支手機時可以勾選「傳給」哪幾支，一次傳給全部（Android、iPhone 混著也行）；沒開著的手機之後打開就會補收
 - **傳文字/網址：** 收到自動複製到剪貼簿，像共用剪貼簿
 - **自動找到對方：** 同一個 Wi-Fi 下打開就連上，找不到時可以手動輸入 IP
-- **USB 線一插就配對：** 手機用傳輸線接電腦、開「USB 網路共用」，自動配對、不用按任何確認；配對一次後拔掉線改用 Wi-Fi 也會自動連。沒有 Wi-Fi 的地方也能傳
+- **USB 線一插就配對：** 手機用傳輸線接電腦、開「USB 網路共用」，自動配對、不用按任何確認；配對一次後拔掉線改用 Wi-Fi 也會自動連。插著線時會自動改走傳輸線（就算原本連著 Wi-Fi），沒有 Wi-Fi 的地方也能傳
 - **Wi-Fi 第一次連線要在電腦按「允許」：** 同一個網路裡的陌生手機不能亂傳
 - **中英文介面：** 跟著系統語言自動切換
 - **超輕量：** Android App 約 40 KB（純 Java、沒有任何第三方函式庫），電腦版是單一個 exe
@@ -105,9 +106,10 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 
 **PocketDrop** sends files and text between your phone (Android or iPhone) and your PC over the same Wi-Fi, or over a single USB cable. There's no account and no cloud, and the Android app is only about 40 KB (plain Java, zero dependencies).
 
+- **One-to-many:** with several phones paired, tick which ones to send to and they all get it (Android and iPhone mixed). Phones that are offline pick it up the next time they open the app.
 - Two-way file transfer, including whole folders. Text you receive is copied to the clipboard automatically.
 - Auto-discovery on the local network, with a manual IP fallback.
-- **Plug in a USB cable and it pairs itself.** Turn on USB tethering and the PC sees the request arrive on the phone's RNDIS/NCM adapter, so it knows the phone is physically connected and pairs it with no confirmation. After that, the phone also reconnects automatically over Wi-Fi. This works even where there's no Wi-Fi.
+- **Plug in a USB cable and it pairs itself.** Turn on USB tethering and the PC sees the request arrive on the phone's RNDIS/NCM adapter, so it knows the phone is physically connected and pairs it with no confirmation. After that, the phone also reconnects automatically over Wi-Fi, and switches back to the cable whenever it's plugged in. This works even where there's no Wi-Fi.
 - Over Wi-Fi, the first time a phone connects you approve it on the PC.
 - Send from anywhere: use the phone's share sheet, drag files onto the PC window, or add a shortcut to `shell:sendto` for the right-click menu.
 - **iPhone works too, with no app to install.** Click "Connect a phone" on the PC and scan the QR code with the iPhone camera. The web version opens in Safari and pairs automatically. Use Add to Home Screen to launch it like an app.

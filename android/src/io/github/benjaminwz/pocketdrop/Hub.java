@@ -264,8 +264,14 @@ public class Hub {
                 }
             }
             try {
-                if (state != CONNECTED) connect();
-                else poll();
+                if (state != CONNECTED) {
+                    connect();
+                } else {
+                    // 插了線、開了 USB 網路共用，但還在走 Wi-Fi：試著改走傳輸線；在切過去之前問得勤一點
+                    boolean usbWaiting = !isUsbHost(host) && !usbAddresses().isEmpty();
+                    if (usbWaiting) trySwitchToUsb();
+                    poll(usbWaiting && !isUsbHost(host) ? 5 : 25);
+                }
             } catch (Unauthorized e) {
                 clearKey();
                 setState(SEARCHING, T("電腦取消了配對，重新連線…", "The PC unpaired this phone. Reconnecting…"));
@@ -304,8 +310,8 @@ public class Hub {
         }
         if (state != NOT_FOUND) setState(SEARCHING, T("正在尋找電腦…", "Looking for your PC…"));
 
-        // 1. 上次那台電腦還在原本的 IP
-        if (key != null && host != null) {
+        // 1. 上次那台電腦還在原本的 IP（手機開著 USB 網路共用時跳過，直接去找走傳輸線的路）
+        if (key != null && host != null && (usbAddresses().isEmpty() || isUsbHost(host))) {
             int code = ping(host, port);
             if (code == 200) {
                 setConnected();
@@ -560,8 +566,24 @@ public class Hub {
     // ------------------------------------------------------------ 電腦 → 手機
 
     /** 問電腦有沒有東西要給手機；沒有的話電腦會等最多 25 秒，一有新東西就馬上回。 */
-    private void poll() throws Exception {
-        HttpURLConnection c = open(host, port, "/api/poll?wait=25", key);
+    private long lastUsbTry;
+
+    /** 已經用 Wi-Fi 連著，手機又開了 USB 網路共用：同一台電腦如果從傳輸線那邊也找得到，就改走線（最多每 5 秒試一次）。 */
+    private void trySwitchToUsb() {
+        long now = System.currentTimeMillis();
+        if (now - lastUsbTry < 5000) return;
+        lastUsbTry = now;
+        for (Pc p : discover()) {
+            if (p.usb && p.id.equals(pcId) && ping(p.host, p.port) == 200) {
+                saveHost(p);
+                setConnected();
+                return;
+            }
+        }
+    }
+
+    private void poll(int wait) throws Exception {
+        HttpURLConnection c = open(host, port, "/api/poll?wait=" + wait, key);
         c.setReadTimeout(40000);
         JSONArray items;
         try {
