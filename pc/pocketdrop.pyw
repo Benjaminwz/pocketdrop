@@ -10,6 +10,7 @@
 import http.server
 import ipaddress
 import json
+import mimetypes
 import re
 import os
 import queue
@@ -188,7 +189,8 @@ def reveal_path(path):
 
 # 手機開「USB 網路共用」時，Windows 會多一張這種名字的網卡（刻意不用 "USB" 這種寬鬆的字，
 # 不然 USB 轉乙太網路的網卡也會被當成手機，整個區網的人都能自動配對）
-USB_ADAPTER = re.compile(r"Remote NDIS|RNDIS|UsbNcm|NCM Host|Android", re.I)
+# iPhone 用傳輸線開「個人熱點」時是 Apple Mobile Device Ethernet（要裝過 Apple 的驅動程式）
+USB_ADAPTER = re.compile(r"Remote NDIS|RNDIS|UsbNcm|NCM Host|Android|Apple Mobile Device Ethernet", re.I)
 _usb_lock = threading.Lock()
 _usb_cache = {"time": 0.0, "nets": []}
 
@@ -290,6 +292,7 @@ class Hub:
         self.pair_lock = threading.Lock()  # 一次只問一支手機
         self.file_lock = threading.Lock()
         self.pc_name = socket.gethostname() or T("電腦", "PC")
+        self.pair_code = None  # (QR code 裡的配對碼, 到期時間)
 
     def emit(self, *event):
         self.events.put(event)
@@ -318,6 +321,16 @@ class Hub:
         self.emit("pair", name, answer, done)
         done.wait(120)
         return answer["ok"]
+
+    def new_pair_code(self):
+        """QR code 裡帶的配對碼：掃了電腦螢幕上的 QR code，代表人就在電腦前面，不用再按允許。10 分鐘內有效。"""
+        self.pair_code = (secrets.token_urlsafe(8), time.time() + 600)
+        return self.pair_code[0]
+
+    def check_pair_code(self, code):
+        pc = self.pair_code
+        return bool(code and pc and time.time() < pc[1]
+                    and secrets.compare_digest(code.encode("utf-8", "replace"), pc[0].encode()))
 
     def add_device(self, did, name):
         with self.cfg.lock:
@@ -354,16 +367,17 @@ class Hub:
             self.cond.notify_all()
         return item
 
-    def wait_items(self, wait):
-        """手機來問「有東西給我嗎」：有就馬上回，沒有就等一下（最多 wait 秒），有新東西時立刻回。"""
+    def wait_items(self, wait, after=0):
+        """手機來問「有東西給我嗎」：有就馬上回，沒有就等一下（最多 wait 秒），有新東西時立刻回。
+        after：只要編號比它新的（網頁版用：已經顯示過、等使用者點下載的，不要一直重送）。"""
         deadline = time.time() + wait
         with self.cond:
-            while not self.outbox:
+            while True:
+                items = [it for it in self.outbox if it["id"] > after]
                 left = deadline - time.time()
-                if left <= 0:
-                    break
+                if items or left <= 0:
+                    return [{k: v for k, v in it.items() if k != "path"} for it in items[:50]]
                 self.cond.wait(left)
-            return [{k: v for k, v in it.items() if k != "path"} for it in self.outbox[:50]]
 
     def get_item(self, item_id):
         with self.cond:
@@ -411,16 +425,17 @@ PAGE = """<!doctype html><html lang="%LANG%"><head><meta charset="utf-8">
 h1{margin:4px 0;color:#1a2656}p{color:#6b7688}
 a.btn{display:block;background:#3558d4;color:#fff;text-decoration:none;padding:16px;border-radius:12px;font-size:18px;font-weight:bold;margin:22px 0}
 ol{text-align:left;line-height:1.9;color:#1f2a3d;padding-left:22px}</style></head>
-<body><div class="card"><h1>%TITLE%</h1><p>%SUB%</p>%BODY%</div></body></html>"""
+<body><div class="card"><h1>%TITLE%</h1><p>%SUB%</p>%BODY%<p><a id="web" href="/web">%WEB%</a></p></div>
+<script>document.getElementById("web").href = "/web" + location.search;</script></body></html>"""
 
 PAGE_TEXT = {
-    "zh": {"LANG": "zh-Hant", "TITLE": "口袋快傳", "SUB": "手機跟電腦互傳檔案",
+    "zh": {"LANG": "zh-Hant", "TITLE": "口袋快傳", "SUB": "手機跟電腦互傳檔案", "WEB": "不想裝 App？直接用網頁版 →",
            "OK": """<a class="btn" href="/PocketDrop.apk">下載 Android App</a>
 <ol><li>下載完打開 <b>PocketDrop.apk</b></li>
 <li>手機問要不要允許安裝，選「允許／設定 → 允許這個來源」</li>
 <li>裝好打開口袋快傳，再到電腦上按「允許」就連上了</li></ol>""",
            "MISSING": "<p>電腦上找不到 PocketDrop.apk，請把它放在口袋快傳程式的資料夾裡。</p>"},
-    "en": {"LANG": "en", "TITLE": "PocketDrop", "SUB": "Send files between your phone and PC",
+    "en": {"LANG": "en", "TITLE": "PocketDrop", "SUB": "Send files between your phone and PC", "WEB": "Rather not install? Use the web version →",
            "OK": """<a class="btn" href="/PocketDrop.apk">Download Android app</a>
 <ol><li>When the download finishes, open <b>PocketDrop.apk</b></li>
 <li>If the phone asks, allow installing apps from this source</li>
@@ -432,7 +447,7 @@ PAGE_TEXT = {
 def download_page(accept_language):
     t = PAGE_TEXT["zh" if "zh" in (accept_language or "").lower() else "en"]
     html = PAGE.replace("%BODY%", t["OK"] if os.path.exists(APK_PATH) else t["MISSING"])
-    for k in ("LANG", "TITLE", "SUB"):
+    for k in ("LANG", "TITLE", "SUB", "WEB"):
         html = html.replace(f"%{k}%", t[k])
     return html
 
@@ -469,7 +484,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
 
     def device(self):
-        return self.hub.find_device(self.headers.get("X-Key", ""))
+        # 網頁版的下載連結沒辦法帶 header，所以鑰匙也可以放在網址的 k= 裡
+        return self.hub.find_device(self.headers.get("X-Key", "") or self.q.get("k", ""))
+
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def send_static(self, name, ctype):
+        try:
+            with open(os.path.join(RES_DIR, name), "rb") as f:
+                body = f.read()
+        except OSError:
+            return self.deny(404, "missing")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
 
     def body_chunks(self, bufsize=1 << 20):
         """一塊一塊讀請求內容；手機不知道檔案大小時會用 chunked 分段傳。"""
@@ -511,10 +546,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.parse()
         try:
             if self.route == "/":
+                # iPhone / iPad 裝不了 APK，直接帶到網頁版（配對碼一起帶過去）
+                if re.search(r"iPhone|iPad|iPod", self.headers.get("User-Agent", "")):
+                    query = urllib.parse.urlsplit(self.path).query
+                    return self.redirect("/web" + ("?" + query if query else ""))
                 html = download_page(self.headers.get("Accept-Language"))
                 return self.reply(200, body=html.encode("utf-8"), ctype="text/html; charset=utf-8")
             if self.route == "/PocketDrop.apk":
                 return self.send_apk()
+            if self.route == "/web":
+                return self.send_static("web.html", "text/html; charset=utf-8")
+            if self.route == "/icon.png":
+                return self.send_static("icon-180.png", "image/png")
             did, dev = self.device()
             if not did:
                 return self.deny(401, "not paired")
@@ -525,7 +568,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     wait = max(0.0, min(float(self.q.get("wait", "25")), 30.0))
                 except ValueError:
                     wait = 25.0
-                items = self.hub.wait_items(wait)
+                try:
+                    after = int(self.q.get("after", "0"))
+                except ValueError:
+                    after = 0
+                items = self.hub.wait_items(wait, after)
                 self.hub.touch(did)
                 return self.reply(200, {"items": items})
             if self.route == "/api/file":
@@ -565,8 +612,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with f:
             size = os.fstat(f.fileno()).st_size
             self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
+            # 網頁版下載時要有檔名；inline=1 是直接在瀏覽器裡預覽（例如照片）
+            name = os.path.basename(item["name"])
+            ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "file"
+            disp = "inline" if self.q.get("inline") == "1" else "attachment"
+            self.send_header("Content-Type", mimetypes.guess_type(name)[0] or "application/octet-stream")
             self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition",
+                             f"{disp}; filename=\"{ascii_name}\"; filename*=UTF-8''{urllib.parse.quote(name)}")
             self.end_headers()
             tid = self.hub.new_tid()
             sent, last = 0, 0.0
@@ -583,6 +636,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         last = now
                         self.hub.touch(did)
                         self.hub.emit("xfer", tid, "out", item["name"], sent, size, "run")
+                # 網頁版沒辦法知道下載完了沒，由電腦這邊送完就算數
+                if self.q.get("done") == "1" and sent == size:
+                    self.hub.finish_item(item["id"], True)
             finally:
                 self.hub.emit("xfer", tid, "out", item["name"], sent, size, "end")
 
@@ -634,6 +690,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if is_usb_peer(self.client_address[0]):
                         dev = self.hub.add_device(did, name)
                         self.hub.emit("log", "✓", T(f"「{name}」用 USB 線接上，已自動配對（之後改用 Wi-Fi 也會自動連）", f"\"{name}\" was connected by USB cable and paired automatically (it will also reconnect over Wi-Fi)"), "ok")
+                    elif self.hub.check_pair_code(self.q.get("code", "")):
+                        dev = self.hub.add_device(did, name)
+                        self.hub.emit("log", "✓", T(f"「{name}」掃了 QR code，已自動配對",
+                                                    f"\"{name}\" scanned the QR code and was paired automatically"), "ok")
                     elif not self.hub.ask_pair(name):
                         return self.reply(403, {"ok": False, "error": "denied"})
                     else:
@@ -842,7 +902,7 @@ class App:
         bottom.pack(fill="x", pady=(px(10), 0))
         FlatButton(bottom, T("打開接收資料夾", "Open received folder"), self.open_recv, primary=False, small=True).pack(side="left")
         FlatButton(bottom, T("更改…", "Change…"), self.change_recv, primary=False, small=True).pack(side="left", padx=(px(6), 0))
-        FlatButton(bottom, T("手機安裝 App", "Install phone app"), self.show_install, primary=False, small=True).pack(side="right")
+        FlatButton(bottom, T("連接手機", "Connect a phone"), self.show_install, primary=False, small=True).pack(side="right")
         bottom2 = tk.Frame(body, bg=BG)
         bottom2.pack(fill="x", pady=(px(6), 0))
         self.recv_label = tk.Label(bottom2, text="", bg=BG, fg=MUTED, font=(FONT, 9), anchor="w")
@@ -864,7 +924,7 @@ class App:
             self.drop.dnd_bind("<<DropEnter>>", lambda e: self.set_hover(True))
             self.drop.dnd_bind("<<DropLeave>>", lambda e: self.set_hover(False))
 
-        self.log_line("", T("開好了。手機打開口袋快傳 App 就會自動連上；還沒裝的話按右下角「手機安裝 App」。", "Ready. Open PocketDrop on your phone and it connects automatically. No app yet? Click \"Install phone app\" at the bottom right."), "muted")
+        self.log_line("", T("開好了。手機打開口袋快傳 App 就會自動連上；還沒裝 App 或是用 iPhone，按右下角「連接手機」。", "Ready. Open PocketDrop on your phone and it connects automatically. No app yet, or using an iPhone? Click \"Connect a phone\" at the bottom right."), "muted")
 
     def card(self, parent, title):
         outer = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER)
@@ -1112,9 +1172,10 @@ class App:
             self.log_line("", T("已取消所有手機的配對", "Unpaired all phones"), "muted")
 
     def show_install(self):
-        url = f"http://{lan_ip()}:{HTTP_PORT}/"
+        base = f"http://{lan_ip()}:{HTTP_PORT}/"
+        url = base + "?code=" + self.hub.new_pair_code()
         win = tk.Toplevel(self.root)
-        win.title(T("手機安裝 App", "Install phone app"))
+        win.title(T("連接手機", "Connect a phone"))
         win.configure(bg=CARD)
         win.transient(self.root)
         win.resizable(False, False)
@@ -1134,11 +1195,14 @@ class App:
                 for x, on in enumerate(line):
                     if on:
                         canvas.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill=HEAD_BG, width=0)
-        tk.Label(box, text=T(f"或在手機瀏覽器輸入：{url}", f"or open this in the phone's browser: {url}"), bg=CARD, fg=ACCENT, font=(FONT, 10)).pack()
-        steps = (T("1. 手機跟電腦要連同一個 Wi-Fi\n", "1. Connect the phone and this PC to the same Wi-Fi\n")
-                 + T("2. 打開網頁後按「下載 Android App」，下載完打開 PocketDrop.apk\n", "2. Tap \"Download Android app\", then open PocketDrop.apk\n")
-                 + T("3. 手機問要不要允許安裝，選「允許」\n", "3. If the phone asks whether to allow the install, choose \"Allow\"\n")
-                 + T("4. 裝好打開口袋快傳，電腦這邊按「允許」就連上了", "4. Open PocketDrop, then click \"Allow\" on this PC"))
+        tk.Label(box, text=T(f"或在手機瀏覽器輸入：{base}", f"or open this in the phone's browser: {base}"), bg=CARD, fg=ACCENT, font=(FONT, 10)).pack()
+        steps = (T("手機和電腦要連同一個 Wi-Fi。\n\n", "Connect the phone and this PC to the same Wi-Fi.\n\n")
+                 + T("• Android：打開網頁後下載 App 安裝（功能最完整）\n",
+                     "• Android: download and install the app from the page (full features)\n")
+                 + T("• iPhone：不用裝 App，直接在網頁上傳檔；\n   按 Safari 的「分享 → 加入主畫面」就能像 App 一樣打開\n",
+                     "• iPhone: no app needed, send files right from the page.\n   Tap Share → Add to Home Screen in Safari to use it like an app\n")
+                 + T("• 掃這個 QR code 連線會自動配對，不用按允許（10 分鐘內有效）",
+                     "• Scanning this QR code pairs automatically, no need to click Allow (valid for 10 minutes)"))
         tk.Label(box, text=steps, bg=CARD, fg=MUTED, font=(FONT, 9), justify="left").pack(pady=(px(12), 0), anchor="w")
         if not os.path.exists(APK_PATH):
             tk.Label(box, text=T("注意：程式資料夾裡找不到 PocketDrop.apk", "Note: PocketDrop.apk was not found next to this program"), bg=CARD, fg=BAD_COLOR, font=(FONT, 9)).pack(pady=(px(8), 0))

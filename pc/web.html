@@ -1,0 +1,282 @@
+<!doctype html>
+<!-- 網頁版口袋快傳：給 iPhone（或任何沒裝 App 的手機、電腦）用。電腦版在 /web 提供這一頁，API 跟 Android App 共用。 -->
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a2656">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
+<title>PocketDrop</title>
+<style>
+:root{--navy:#1a2656;--accent:#3558d4;--soft:#e8eeff;--bg:#f4f6fc;--card:#fff;--text:#1f2a3d;--muted:#6b7688;--border:#dde2f1;--ok:#22a35a;--bad:#d64545}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",system-ui,sans-serif}
+header{background:var(--navy);color:#fff;padding:calc(env(safe-area-inset-top) + 18px) 20px 18px;display:flex;gap:12px;align-items:flex-start}
+header img{width:46px;height:46px;border-radius:12px;flex:none}
+h1{font-size:22px;margin:0}
+#status{color:#c1cbee;font-size:15px;margin-top:2px}
+#status.on{color:#7be0a4}
+#status.warn{color:#ffc069}
+#actions button{margin-top:10px;background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:18px;padding:8px 14px;font-size:14px}
+main{padding:0 14px calc(env(safe-area-inset-bottom) + 20px);max-width:640px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:14px 16px 16px;margin-top:14px}
+h2{font-size:17px;margin:0 0 12px}
+.btn{position:relative;display:flex;align-items:center;justify-content:center;width:100%;border:0;border-radius:14px;font:inherit;font-weight:700;padding:16px;cursor:pointer}
+.primary{background:var(--accent);color:#fff}
+.soft{background:var(--soft);color:var(--accent);padding:13px}
+.btn input{position:absolute;width:1px;height:1px;opacity:0}
+textarea{display:block;width:100%;min-height:72px;margin:14px 0 10px;border:1px solid var(--border);border-radius:12px;background:#f6f8fe;padding:10px 12px;font:inherit;color:inherit;resize:vertical}
+.item{border:1px solid var(--border);background:#f7f9fc;border-radius:12px;padding:10px 12px;margin-bottom:8px}
+.t{font-weight:700;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.body{white-space:pre-wrap;word-break:break-word;font-size:14px;margin-top:4px;max-height:7.5em;overflow:hidden}
+.sub{font-size:13px;color:var(--muted);margin-top:4px}
+.sub.ok{color:var(--ok)}
+.sub.bad{color:var(--bad)}
+.bar{height:6px;background:var(--border);border-radius:3px;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--accent)}
+.row{display:flex;gap:8px}
+.row:not(:empty){margin-top:8px}
+.row a,.row button{flex:1;text-align:center;text-decoration:none;background:var(--soft);color:var(--accent);border:0;border-radius:10px;padding:9px;font:inherit;font-size:14px;font-weight:700}
+.empty{color:var(--muted);font-size:14px;margin:4px 0}
+.foot{color:var(--muted);text-align:center;font-size:12px;margin-top:14px}
+#tip{display:none;background:#fff7e0;border:1px solid #f3dfa2;color:#7a5b00;border-radius:12px;padding:10px 12px;font-size:13px;margin-top:14px}
+</style></head>
+<body>
+<header><img src="/icon.png" alt=""><div><h1 id="title"></h1><div id="status"></div><div id="actions"></div></div></header>
+<main>
+<div id="tip"></div>
+<section class="card"><h2 id="h-send"></h2>
+<label class="btn primary"><span id="l-files"></span><input id="files" type="file" multiple></label>
+<textarea id="text"></textarea>
+<button id="sendText" class="btn soft"></button>
+</section>
+<section class="card"><h2 id="h-log"></h2><div id="list"></div><p class="empty" id="empty"></p></section>
+<p class="foot" id="foot"></p>
+</main>
+<script>
+"use strict";
+// 介面文字：中文系統顯示中文，其他顯示英文
+const ZH = (navigator.language || "").toLowerCase().startsWith("zh");
+const T = (zh, en) => ZH ? zh : en;
+const APP = T("口袋快傳", "PocketDrop");
+const $ = id => document.getElementById(id);
+document.title = APP;
+document.documentElement.lang = ZH ? "zh-Hant" : "en";
+$("title").textContent = APP;
+$("h-send").textContent = T("傳到電腦", "Send to PC");
+$("l-files").textContent = T("選照片／檔案", "Choose photos / files");
+$("text").placeholder = T("輸入文字或網址…", "Type text or a link…");
+$("sendText").textContent = T("傳文字到電腦", "Send text to PC");
+$("h-log").textContent = T("紀錄", "Activity");
+$("empty").textContent = T("還沒有傳過東西。在電腦版拖檔案進視窗，就會出現在這裡。",
+  "Nothing here yet. Drag files into PocketDrop on your PC and they'll show up here.");
+$("foot").textContent = T("這個網頁開著時才收得到電腦傳來的東西；傳檔時不要鎖螢幕",
+  "Keep this page open to receive from the PC, and don't lock the screen while transferring");
+
+const ua = navigator.userAgent;
+const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+const devName = /iPhone/.test(ua) ? "iPhone" : isIOS ? "iPad"
+  : /Android/.test(ua) ? T("Android 瀏覽器", "Android browser") : T("瀏覽器", "Browser");
+if (isIOS && !navigator.standalone) {
+  $("tip").style.display = "block";
+  $("tip").textContent = T("小技巧：按 Safari 的「分享」→「加入主畫面」，之後就能像 App 一樣直接打開。",
+    "Tip: tap Share → Add to Home Screen in Safari to open this like an app.");
+}
+
+// 手機的 id 和鑰匙存在瀏覽器裡（無痕模式存不了，就每次重新配對）
+const store = {
+  get: k => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+  set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} },
+};
+let devId = store.get("pd_id");
+if (!devId) { devId = "web-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); store.set("pd_id", devId); }
+let key = store.get("pd_key");
+let pcName = store.get("pd_pc") || T("電腦", "PC");
+let code = new URLSearchParams(location.search).get("code") || "";  // 掃電腦上的 QR code 帶來的配對碼
+let lastId = 0;
+let waitingUser = false, wakeFn = null;
+const nap = ms => new Promise(r => { wakeFn = r; setTimeout(r, ms); });
+
+function setStatus(text, cls, retry) {
+  $("status").textContent = text;
+  $("status").className = cls || "";
+  $("actions").textContent = "";
+  if (retry) {
+    const b = document.createElement("button");
+    b.textContent = T("重新連線", "Try again");
+    b.onclick = () => { waitingUser = false; if (wakeFn) wakeFn(); };
+    $("actions").appendChild(b);
+  }
+}
+
+// ---- 連線：跟電腦打招呼拿鑰匙，之後一直問電腦有沒有東西要給手機
+async function hello() {
+  setStatus(code ? T("連線中…", "Connecting…") : T("請到電腦上按「允許」", "Click \"Allow\" on the PC"));
+  const r = await fetch("/api/hello" + (code ? "?code=" + encodeURIComponent(code) : ""), {
+    method: "POST", headers: { "X-Device-Id": devId, "X-Device-Name": encodeURIComponent(devName) } });
+  if (r.status === 200) {
+    const j = await r.json();
+    key = j.key; pcName = j.name || pcName;
+    store.set("pd_key", key); store.set("pd_pc", pcName);
+    code = "";
+    history.replaceState(null, "", "/web");
+    return true;
+  }
+  if (r.status === 403) {
+    setStatus(T("電腦沒有允許連線", "The PC declined"), "warn", true);
+    waitingUser = true;
+    return false;
+  }
+  throw new Error("HTTP " + r.status);
+}
+
+async function loop() {
+  for (;;) {
+    try {
+      if (waitingUser) { await nap(3600000); continue; }
+      if (!key && !await hello()) continue;
+      const r = await fetch("/api/poll?wait=25&after=" + lastId, { headers: { "X-Key": key }, cache: "no-store" });
+      if (r.status === 401) { key = ""; store.set("pd_key", ""); continue; }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setStatus(T("● 已連上：", "● Connected: ") + pcName, "on");
+      const j = await r.json();
+      for (const it of j.items) { lastId = Math.max(lastId, it.id); receive(it); }
+    } catch (e) {
+      setStatus(T("連不上電腦，重試中…（電腦要開著口袋快傳、連同一個 Wi-Fi）",
+        "Can't reach the PC, retrying… (PocketDrop must be open on the PC, same Wi-Fi)"), "warn");
+      await nap(3000);
+    }
+  }
+}
+
+// ---- 紀錄
+const list = $("list");
+function fmt(n) {
+  if (n == null || n < 0) return "?";
+  if (n < 1024) return n + " B";
+  const u = ["KB", "MB", "GB"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < 2);
+  return n.toFixed(1) + " " + u[i];
+}
+function entry(title, body) {
+  const el = document.createElement("div");
+  el.className = "item";
+  el.innerHTML = '<div class="t"></div><div class="body"></div><div class="bar"><i></i></div><div class="sub"></div><div class="row"></div>';
+  el.querySelector(".t").textContent = title;
+  const b = el.querySelector(".body");
+  if (body != null) b.textContent = body; else b.remove();
+  el.querySelector(".bar").style.display = "none";
+  list.prepend(el);
+  $("empty").style.display = "none";
+  while (list.children.length > 60) list.lastChild.remove();
+  return el;
+}
+function sub(el, text, cls) { const s = el.querySelector(".sub"); s.textContent = text; s.className = "sub " + (cls || ""); }
+function bar(el, done, total) {
+  const b = el.querySelector(".bar");
+  if (total == null) { b.style.display = "none"; return; }
+  b.style.display = "block";
+  b.firstChild.style.width = Math.min(100, done * 100 / Math.max(total, 1)) + "%";
+}
+function button(el, text, onclick, href) {
+  const b = document.createElement(href ? "a" : "button");
+  b.textContent = text;
+  if (href) b.href = href; else b.onclick = onclick;
+  el.querySelector(".row").appendChild(b);
+  return b;
+}
+// 一般 http 網頁用不了新的剪貼簿功能，改用舊方法（要在使用者按按鈕時才行）
+function copy(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;opacity:0";
+  document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+  try { document.execCommand("copy"); } catch (e) {}
+  ta.remove();
+}
+
+// ---- 電腦 → 手機（瀏覽器不能自動存檔，要使用者按「下載」）
+function receive(it) {
+  if (it.type === "text") {
+    const el = entry("↓ " + T("電腦傳來的文字", "Text from PC"), it.text);
+    sub(el, T("按「複製」就能貼到別的地方", "Tap Copy to paste it elsewhere"));
+    button(el, T("複製", "Copy"), () => { copy(it.text); sub(el, T("✓ 已複製", "✓ Copied"), "ok"); });
+    fetch("/api/done?id=" + it.id + "&ok=1", { method: "POST", headers: { "X-Key": key } }).catch(() => {});
+    return;
+  }
+  const name = it.name.split("/").pop();
+  const el = entry("↓ " + it.name);
+  sub(el, fmt(it.size) + " · " + T("按「下載」存到手機", "Tap Download to save it"));
+  const url = "/api/file?id=" + it.id + "&k=" + encodeURIComponent(key) + "&done=1";
+  const dl = button(el, T("下載", "Download"), null, url);
+  dl.setAttribute("download", name);
+  dl.addEventListener("click", () => sub(el, isIOS
+    ? T("✓ 已開始下載（在「檔案」App →「下載項目」）", "✓ Download started (Files app → Downloads)")
+    : T("✓ 已開始下載", "✓ Download started"), "ok"));
+  if (/\.(jpe?g|png|gif|heic|webp|mp4|mov)$/i.test(name)) {
+    const pv = button(el, T("預覽", "Preview"), null, url + "&inline=1");
+    pv.target = "_blank";
+  }
+}
+
+// ---- 手機 → 電腦（一個一個傳，XMLHttpRequest 才有上傳進度）
+const queue = [];
+let busy = false;
+$("files").addEventListener("change", e => {
+  for (const f of e.target.files) {
+    const el = entry("↑ " + f.name);
+    sub(el, T("等待傳送…", "Waiting…"));
+    queue.push({ file: f, el: el });
+  }
+  e.target.value = "";
+  pump();
+});
+async function pump() {
+  if (busy) return;
+  busy = true;
+  while (queue.length) { const q = queue.shift(); await upload(q.file, q.el); }
+  busy = false;
+}
+function upload(file, el) {
+  return new Promise(resolve => {
+    if (!key) { sub(el, T("✗ 還沒連上電腦", "✗ Not connected to the PC"), "bad"); return resolve(); }
+    const x = new XMLHttpRequest();
+    const t0 = Date.now();
+    x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size);
+    x.setRequestHeader("X-Key", key);
+    x.setRequestHeader("Content-Type", "application/octet-stream");
+    x.upload.onprogress = ev => {
+      bar(el, ev.loaded, file.size);
+      const speed = ev.loaded * 1000 / Math.max(Date.now() - t0, 1);
+      sub(el, T("傳送中 ", "Sending ") + Math.floor(ev.loaded * 100 / Math.max(file.size, 1)) + "%  "
+        + fmt(ev.loaded) + " / " + fmt(file.size) + "  " + fmt(speed) + "/s");
+    };
+    x.onload = () => {
+      bar(el);
+      if (x.status === 200) sub(el, T("✓ 已傳到電腦（", "✓ Sent to PC (") + fmt(file.size) + T("）", ")"), "ok");
+      else sub(el, T("✗ 失敗：電腦回應 ", "✗ Failed: PC replied ") + x.status, "bad");
+      resolve();
+    };
+    x.onerror = () => { bar(el); sub(el, T("✗ 傳到一半斷掉了", "✗ The connection dropped"), "bad"); resolve(); };
+    sub(el, T("傳送中…", "Sending…"));
+    bar(el, 0, file.size);
+    x.send(file);
+  });
+}
+$("sendText").onclick = async () => {
+  const text = $("text").value;
+  if (!text.trim()) return;
+  const el = entry("↑ " + T("傳給電腦的文字", "Text sent to PC"), text);
+  $("text").value = "";
+  try {
+    const r = await fetch("/api/text", { method: "POST", headers: { "X-Key": key, "Content-Type": "text/plain; charset=utf-8" }, body: text });
+    sub(el, r.ok ? T("✓ 已傳到電腦", "✓ Sent to PC") : T("✗ 失敗", "✗ Failed"), r.ok ? "ok" : "bad");
+  } catch (e) {
+    sub(el, T("✗ 傳送失敗，請再試一次", "✗ Couldn't send. Please try again"), "bad");
+  }
+};
+loop();
+</script>
+</body></html>

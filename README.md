@@ -3,7 +3,7 @@
 <h1 align="center">PocketDrop 口袋快傳</h1>
 
 <p align="center">
-手機 ↔ 電腦，同一個 Wi-Fi 或<b>一條 USB 線</b>就能直接互傳檔案和文字。<br>
+手機 ↔ 電腦，同一個 Wi-Fi 或<b>一條 USB 線</b>就能直接互傳檔案和文字。Android 和 iPhone 都能用。<br>
 不用註冊、不經過雲端、不用裝一堆東西，Android App 只有 <b>約 40 KB</b>。<br>
 <a href="#english">English below</a>
 </p>
@@ -22,7 +22,9 @@
 - **方便的入口：**
   - 手機：相簿或任何 App 按「分享 → 口袋快傳」
   - 電腦：把檔案拖進視窗；也可以把 exe 的捷徑放進右鍵「傳送到」選單（Win+R 輸入 `shell:sendto`，把捷徑放進去）
-- **手機還沒裝 App？** 電腦版按「手機安裝 App」會出現 QR code，手機掃一下就能從電腦直接下載安裝
+- **iPhone 也能用，不用裝 App：** 電腦版按「連接手機」，用 iPhone 相機掃 QR code，就能直接在 Safari 裡傳檔、傳文字；「加入主畫面」後就跟 App 一樣
+- **掃 QR code 自動配對：** 掃電腦螢幕上的 QR code 連線，不用再按允許
+- **Android 還沒裝 App？** 一樣掃那個 QR code，就能從電腦直接下載安裝
 
 ## 下載
 
@@ -33,6 +35,8 @@
 | `PocketDrop.exe` | Windows 電腦版，直接執行，不用安裝 Python |
 | `PocketDrop.apk` | Android App（Android 10 以上） |
 
+iPhone 不用下載任何東西，見下面的使用方法。
+
 ## 使用方法
 
 1. 電腦打開 `PocketDrop.exe`。
@@ -42,11 +46,13 @@
 3. 連線，二選一：
    - **Wi-Fi：** 手機跟電腦連同一個 Wi-Fi，打開手機 App，電腦上按「允許」就連上了。
    - **USB 線：** 用傳輸線接上電腦，手機 App 按「用 USB 線連 → 打開設定」，開啟「USB 網路共用」，就會自動配對連上。
+   - **iPhone：** 電腦版按右下角「連接手機」，用 iPhone 相機掃 QR code，就會打開網頁版並自動配對。之後按 Safari 的「分享 → 加入主畫面」，下次從主畫面打開就好。
 
 收到的檔案存在：
 
 - **電腦：** `下載\PocketDrop`（可以改）
-- **手機：** `下載/PocketDrop`
+- **Android：** `下載/PocketDrop`
+- **iPhone：** 按「下載」後存在「檔案」App 的「下載項目」
 
 ## 注意事項
 
@@ -54,7 +60,8 @@
 - 傳輸走區域網路的 HTTP，**沒有加密**，請在自己家裡或信任的 Wi-Fi 使用。
 - 有些公共 Wi-Fi 會擋裝置之間互連（AP 隔離），這種時候改用 USB 線就好。
 - 開著 USB 網路共用時，電腦可能會透過手機的網路上網（會用到手機流量），傳完可以關掉。
-- USB 自動配對目前只支援 Windows 電腦版。
+- USB 自動配對目前只支援 Windows 電腦版。iPhone 用傳輸線開「個人熱點」也可以，但電腦要先裝好 Apple 的驅動程式（例如 iTunes 或 Apple Devices）。
+- iPhone 網頁版的限制：網頁要開著才收得到電腦傳來的東西；電腦傳來的檔案要一個一個按「下載」；沒辦法從相簿直接「分享」過去。
 - 電腦版在 Windows 11 上測試過；macOS / Linux 可以用原始碼執行，但還沒實際測過。
 
 ## 從原始碼執行／打包
@@ -84,6 +91,8 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **連線與傳輸：** 之後全部走 HTTP。第一次連線 `/api/hello` 時，電腦會跳出詢問；允許後發一把鑰匙給手機，之後每個請求都要帶。
 - **USB 自動配對：** 手機開 USB 網路共用後，電腦會多一張 RNDIS / NCM 網卡。電腦發現 `/api/hello` 是從這張網卡進來的，代表手機實體接在這台電腦上，就直接發鑰匙。網卡名稱比對刻意很嚴格，USB 轉乙太網路的網卡不會被誤認。
 - **電腦 → 手機：** 用 long-polling（`/api/poll`）。電腦一有新東西，手機馬上知道。
+- **網頁版：** 電腦版在 `/web` 提供同一套功能的網頁，走一樣的 API。下載連結用網址帶鑰匙（`k=`），電腦送完檔案就當作已收到（`done=1`）。
+- **QR code 配對：** QR code 網址裡帶一個 10 分鐘有效的配對碼，帶著它來打招呼的手機直接配對。
 - **手機存檔：** 用 MediaStore 存到「下載」資料夾，不需要任何儲存權限。
 
 ---
@@ -94,14 +103,15 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 
 <p align="center"><img src="docs/screenshot-pc-en.png" width="420" alt="PocketDrop Windows app (English)"></p>
 
-**PocketDrop** sends files and text between your Android phone and your PC over the same Wi-Fi, or over a single USB cable. There's no account and no cloud, and the Android app is only about 40 KB (plain Java, zero dependencies).
+**PocketDrop** sends files and text between your phone (Android or iPhone) and your PC over the same Wi-Fi, or over a single USB cable. There's no account and no cloud, and the Android app is only about 40 KB (plain Java, zero dependencies).
 
 - Two-way file transfer, including whole folders. Text you receive is copied to the clipboard automatically.
 - Auto-discovery on the local network, with a manual IP fallback.
 - **Plug in a USB cable and it pairs itself.** Turn on USB tethering and the PC sees the request arrive on the phone's RNDIS/NCM adapter, so it knows the phone is physically connected and pairs it with no confirmation. After that, the phone also reconnects automatically over Wi-Fi. This works even where there's no Wi-Fi.
 - Over Wi-Fi, the first time a phone connects you approve it on the PC.
 - Send from anywhere: use the phone's share sheet, drag files onto the PC window, or add a shortcut to `shell:sendto` for the right-click menu.
-- The PC app shows a QR code so a phone can download the APK straight from the PC.
+- **iPhone works too, with no app to install.** Click "Connect a phone" on the PC and scan the QR code with the iPhone camera. The web version opens in Safari and pairs automatically. Use Add to Home Screen to launch it like an app.
+- Scanning the QR code pairs automatically. The same QR code also lets Android phones download the APK straight from the PC.
 
 **Download** `PocketDrop.exe` (Windows) and `PocketDrop.apk` (Android 10+) from [Releases](../../releases).
 The UI switches between English and Chinese to match your system language.
