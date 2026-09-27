@@ -1,0 +1,11 @@
+# build output
+android/build/
+dist/
+build_pyi/
+__pycache__/
+*.apk
+# signing key: never publish
+*.keystore
+*.jks
+android/signing.txt
+*.idsig
