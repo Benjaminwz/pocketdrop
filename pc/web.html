@@ -60,11 +60,14 @@ body.dragging #drop{display:flex}
 </section>
 <section class="card"><h2 id="h-log"></h2><div id="list"></div><p class="empty" id="empty"></p></section>
 <p class="foot" id="foot"></p>
+<p class="foot"><a id="lang" href="#" style="color:#3558d4"></a></p>
 </main>
 <script>
 "use strict";
-// 介面文字：中文系統顯示中文，其他顯示英文
-const ZH = (navigator.language || "").toLowerCase().startsWith("zh");
+// 介面文字：預設中文系統顯示中文、其他顯示英文；最下面的「中文／English」可以自己換（記在這個瀏覽器）
+let savedLang = "";
+try { savedLang = localStorage.getItem("pd_lang") || ""; } catch (e) {}
+const ZH = savedLang ? savedLang === "zh" : (navigator.language || "").toLowerCase().startsWith("zh");
 const T = (zh, en) => ZH ? zh : en;
 const APP = T("口袋快傳", "PocketDrop");
 const $ = id => document.getElementById(id);
@@ -93,6 +96,12 @@ $("foot").textContent = ON_PHONE
   : mobile ? T("這個網頁開著時才收得到電腦傳來的東西；傳檔時不要鎖螢幕", "Keep this page open to receive from the PC, and don't lock the screen while transferring")
   : T("這個網頁開著時才收得到電腦傳來的東西，收到的檔案會自動下載", "Keep this page open to receive from the PC; received files download automatically");
 $("drop").textContent = T("放開就傳過去", "Drop to send");
+$("lang").textContent = ZH ? "English" : "中文";
+$("lang").onclick = e => {
+  e.preventDefault();
+  try { localStorage.setItem("pd_lang", ZH ? "en" : "zh"); } catch (err) {}
+  location.reload();
+};
 
 if (isIOS && !navigator.standalone) {
   $("tip").style.display = "block";

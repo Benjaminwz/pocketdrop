@@ -25,7 +25,7 @@ Android 和 iPhone 都能用，不用註冊任何帳號。Android App 只有 <b>
 - **連接手機精靈：** 第一次打開會一步步帶你連手機；Android 接上傳輸線（選「檔案傳輸」）後，電腦會自動把 App 安裝檔放進手機
 - **Windows 安裝精靈：** 一般的「下一步」安裝，會建好捷徑和右鍵「傳送到」，也會替防火牆開好私人與公用網路
 - **一鍵更新：** GitHub 有新版時，電腦版右上角會出現「更新」按鈕，按一下自動下載安裝（會核對校驗碼）；電腦更新後，手機 App 會跟著出現「更新 App」按鈕，iPhone 網頁版會自動換成新版
-- **中英文介面：** 跟著系統語言自動切換
+- **中英文介面：** 跟著系統語言自動切換；手機 App 右上角、網頁版最下面可以自己換「中文／EN」
 - **超輕量：** Android App 是純 Java，沒有任何第三方函式庫
 
 ## 下載
@@ -103,10 +103,10 @@ python pc/pocketdrop.pyw
 **全部打包**（Windows）：先準備好下面 Android 的工具、`pip install pyinstaller`，以及 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.0
+powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.1
 ```
 
-這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.10.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.10.0 → 11000）。
+這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.10.1.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.10.1 → 11001）。
 
 **只做 Android App：** 不需要 Android Studio 或 Gradle，只要 JDK 17 和 Android SDK 命令列工具：
 
@@ -167,7 +167,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
   - The Windows installer creates the shortcuts and the "Send to" entry, and opens the firewall for private and public networks.
   - A phone wizard walks you through connecting. For Android, it copies the APK onto the phone over the USB cable (File transfer mode); you just tap Install on the phone.
 - **One-click updates:** when a new release is on GitHub, the PC app shows an Update button that downloads it, verifies the SHA-256, and installs it. After that, the phone app offers "Update app" (the new APK comes from the PC), and the iPhone web page reloads itself.
-- The UI switches between English and Chinese to match your system language.
+- The UI switches between English and Chinese to match your system language. You can also switch it yourself: top right of the phone app, bottom of the web page.
 
 **Download** from [Releases](../../releases):
 

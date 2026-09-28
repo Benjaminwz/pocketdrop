@@ -75,7 +75,7 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 # Android App 的網址開頭和套件名稱：網頁上的「用 App 打開」靠這兩個叫出 App
 APP_SCHEME = "pocketdrop"
 APP_PACKAGE = "io.github.benjaminwz.pocketdrop"

@@ -55,8 +55,8 @@ import java.util.concurrent.Executors;
  * 跟電腦的約定：UDP 廣播 "POCKETDROP?" 找電腦，之後全部走 HTTP（對應電腦版 pocketdrop.pyw 的 Handler）。
  */
 public class Hub {
-    /** 介面文字：手機是中文就用中文，其他語言一律英文。 */
-    public static final boolean ZH = "zh".equals(Locale.getDefault().getLanguage());
+    /** 介面文字：預設跟著手機語言（中文就用中文，其他語言一律英文）；App 裡按「中文／EN」可以自己換。 */
+    public static volatile boolean ZH = "zh".equals(Locale.getDefault().getLanguage());
 
     public static String T(String zh, String en) {
         return ZH ? zh : en;
@@ -106,8 +106,21 @@ public class Hub {
     private static Hub instance;
 
     public static synchronized Hub get(Context c) {
-        if (instance == null) instance = new Hub(c.getApplicationContext());
+        if (instance == null) {
+            // 先套用自己選的語言，下面各種預設文字才會是對的語言
+            String lang = c.getSharedPreferences("pocketdrop", Context.MODE_PRIVATE).getString("lang", "");
+            if (!lang.isEmpty()) ZH = "zh".equals(lang);
+            instance = new Hub(c.getApplicationContext());
+        }
         return instance;
+    }
+
+    /** 換介面語言（畫面要重建才會全部換過來）。 */
+    public void setLanguage(boolean zh) {
+        ZH = zh;
+        prefs.edit().putString("lang", zh ? "zh" : "en").apply();
+        if (state == CONNECTED) setConnected();
+        else if (state == SEARCHING) setState(SEARCHING, T("正在尋找電腦…", "Looking for your PC…"));
     }
 
     private final Context app;

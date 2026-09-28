@@ -257,7 +257,17 @@ public class MainActivity extends Activity implements Hub.Listener {
         titleRow.addView(icon, new LinearLayout.LayoutParams(dp(46), dp(46)));
         TextView title = label(T("口袋快傳", "PocketDrop"), 22, Color.WHITE, true);
         title.setPadding(dp(12), 0, 0, 0);
-        titleRow.addView(title);
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        // 換語言：手機系統是英文、但想看中文（或反過來）時用
+        TextView lang = label(Hub.ZH ? "EN" : "中文", 14, Color.WHITE, true);
+        lang.setPadding(dp(14), dp(7), dp(14), dp(7));
+        lang.setBackground(ripple(round(0x33FFFFFF, 16, 0), 0x44FFFFFF));
+        lang.setContentDescription(Hub.ZH ? "Switch to English" : "切換成中文");
+        lang.setOnClickListener(v -> {
+            hub.setLanguage(!Hub.ZH);
+            recreate();
+        });
+        titleRow.addView(lang);
         status = label("", 15, NAVY_TEXT, false);
         status.setPadding(0, dp(12), 0, 0);
         head.addView(status);
