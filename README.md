@@ -67,7 +67,8 @@ iPhone 不用下載任何東西。
 - **遠端模式：**
   - 用 Cloudflare 的免費臨時通道（trycloudflare.com），不用註冊。第一次開啟會下載約 60 MB 的 Cloudflare 官方元件。
   - 手機要先在家（或用傳輸線）連過一次，之後在外面就會自動連上。
-  - 資料會經過 Cloudflare 的伺服器（有 HTTPS 加密）。電腦版每次重開，遠端網址都會變；Android 下次連上時會自動更新，iPhone 要重掃一次 QR code。
+  - 資料會經過 Cloudflare 的伺服器（有 HTTPS 加密）。電腦版每次重開遠端網址都會變，所以電腦會把最新網址登記在 ntfy.sh（頻道名稱是隨機亂碼，只有配對過的手機知道；網址本身沒有鑰匙也用不了），手機在外面會自動去查。
+  - **iPhone：** 在電腦版「連接手機 → iPhone」掃「在家、在外面都要用」那個 QR code，會打開口袋快傳的[固定入口](https://benjaminwz.github.io/pocketdrop/go/)，把它「加入主畫面」。之後在哪裡打開，它都會自動找到電腦。開了遠端模式的 iPhone 在家也會走 Cloudflare，會比直連慢一點。
 - **熱點：** 電腦開「行動熱點」給手機連、或手機開熱點給電腦連都可以。電腦開熱點時，如果掃 QR code 連不到，精靈裡會另外列出熱點那邊的位址（通常是 `192.168.137.1`）。手機開熱點會用到手機的行動數據。
 - **更私密的遠端（進階）：** 電腦和手機都裝 [Tailscale](https://tailscale.com/) 並登入同一個帳號，口袋快傳會自動使用。資料直接加密點對點傳，不經過第三方。
 
@@ -94,10 +95,10 @@ python pc/pocketdrop.pyw
 **全部打包**（Windows）：先準備好下面 Android 的工具、`pip install pyinstaller`，以及 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.6.0
+powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.7.0
 ```
 
-這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.6.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.6.0 → 10600）。
+這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.7.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.7.0 → 10700）。
 
 **只做 Android App：** 不需要 Android Studio 或 Gradle，只要 JDK 17 和 Android SDK 命令列工具：
 
@@ -118,6 +119,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **電腦 → 手機：** 用長輪詢（`/api/poll`）。每一項排隊都記著要給哪幾支手機、哪幾支收過了，全部收到才移除。
 - **USB 自動配對：** 手機開 USB 網路共用後，電腦會多一張 RNDIS / NCM 網卡。電腦發現連線是從這張網卡進來的，代表手機實體接在這台電腦上，就直接配對。網卡名稱比對刻意很嚴格，USB 轉乙太網路的網卡不會被誤認。
 - **純有線模式：** 電腦在收到連線的第一時間（還沒回任何東西）就把非 USB 的連線關掉，UDP 搜尋也不回應。手機只在 USB 網卡上廣播。
+- **iPhone 固定入口：** `docs/go/`（GitHub Pages）只在手機上執行。它從 ntfy.sh 查出電腦現在的遠端網址，第一次用 QR code 帶來的配對碼配對（電腦只對這個網站開放跨網站呼叫），再把鑰匙放在網址 `#` 後面跳到電腦的網頁版（`#` 後面的東西不會送到網路上）。
 - **遠端模式：** 電腦版執行 `cloudflared tunnel --url`，把拿到的網址放在 `/api/ping`、`/api/poll` 的回應裡，手機記住後，在外面找不到電腦時就改連它。Cloudflare 每次上傳最多 100 MB，所以上傳一律切成 32 MB 一段（`uid` + `offset`）。從通道進來的連線不能用本機專用的功能。
 - **更新：** 電腦版問 GitHub 的 `releases/latest`，下載對應的檔案並核對 GitHub 提供的 SHA-256。安裝版用新的安裝檔靜默安裝（`/SILENT`）；免安裝版等程式關掉後換掉 exe。手機 App 從 `/api/ping`、`/api/poll` 的 `apk` 欄位知道電腦帶著哪一版，比自己新就從電腦下載，交給系統的 PackageInstaller 安裝。
 - **電腦對電腦：** 配對時發起的電腦會把「對方傳東西過來要用的鑰匙」一起交給對方，所以按一次允許就能雙向傳。傳送是直接推過去（分段上傳，帶 `dir` 保留資料夾），不用排隊。
@@ -143,7 +145,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **USB cable pairing:** plug in and turn on USB tethering, and the phone pairs itself with no confirmation. While the cable is plugged in, transfers use it, so it also works without Wi-Fi.
 - **Cable-only mode:** nothing goes over Wi-Fi, and devices on Wi-Fi can't reach or even discover the PC.
 - **Hotspots work too:** the PC's hotspot for the phone, or the phone's hotspot for the PC.
-- **Remote mode (no account):** tick one box on the PC and your phone can reach it from anywhere. It uses Cloudflare's free quick tunnel, so traffic passes through Cloudflare, encrypted with HTTPS. For fully private remote access, install [Tailscale](https://tailscale.com/) on both devices and PocketDrop uses it automatically.
+- **Remote mode (no account):** tick one box on the PC and your phone can reach it from anywhere. It uses Cloudflare's free quick tunnel, so traffic passes through Cloudflare, encrypted with HTTPS. The tunnel address changes when the PC restarts, so the PC publishes the current one to a random ntfy.sh topic that only paired phones know, and they look it up automatically. iPhones add a fixed [entry page](https://benjaminwz.github.io/pocketdrop/go/) to the Home Screen, which always finds the PC. For fully private remote access, install [Tailscale](https://tailscale.com/) on both devices and PocketDrop uses it automatically.
 - **iPhone with no app:** scan the QR code and use it in Safari, or add it to the Home Screen.
 - **Setup wizards:**
   - The Windows installer creates the shortcuts and the "Send to" entry, and opens the firewall for private and public networks.

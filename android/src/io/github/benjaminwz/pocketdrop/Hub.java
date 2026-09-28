@@ -486,6 +486,20 @@ public class Hub {
             }
             if (code == 401) throw new Unauthorized();
         }
+        String fresh = lookupTunnel();
+        if (!fresh.isEmpty() && !fresh.equals(host) && !fresh.equals(prefs.getString("tunnel", ""))) {
+            int code = ping(fresh, port, 8000);
+            if (code == 200) {
+                prefs.edit().putString("tunnel", fresh).apply();
+                Pc p = new Pc();
+                p.host = fresh;
+                p.port = port;
+                saveHost(p);
+                setConnected();
+                return true;
+            }
+            if (code == 401) throw new Unauthorized();
+        }
         return false;
     }
 
@@ -591,7 +605,33 @@ public class Hub {
     /** 電腦開了遠端模式時會告訴我們網址（電腦每次重開都會變，所以每次連上都更新）。 */
     private void learnTunnel(JSONObject j) {
         if (!j.has("tunnel")) return;
-        prefs.edit().putString("tunnel", j.isNull("tunnel") ? "" : j.optString("tunnel", "")).apply();
+        SharedPreferences.Editor ed = prefs.edit().putString("tunnel", j.isNull("tunnel") ? "" : j.optString("tunnel", ""));
+        String rv = j.optString("rv", "");
+        if (!rv.isEmpty()) ed.putString("rv", rv);  // 遠端網址的登記處（電腦關掉遠端模式時是空的，不要蓋掉）
+        ed.apply();
+    }
+
+    /** 電腦重開（換了遠端網址）時，到 ntfy.sh 的登記處查最新的網址。查不到回傳空字串。 */
+    private String lookupTunnel() {
+        String rv = prefs.getString("rv", "");
+        if (rv.isEmpty()) return "";
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL("https://ntfy.sh/" + URLEncoder.encode(rv, "UTF-8") + "/json?poll=1&since=all").openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(10000);
+            String last = "";
+            for (String line : readAll(c.getInputStream()).split("\n")) {
+                if (line.trim().isEmpty()) continue;
+                JSONObject e = new JSONObject(line);
+                if ("message".equals(e.optString("event"))) last = e.optString("message").trim();
+            }
+            return last.matches("https://[a-z0-9-]+\\.trycloudflare\\.com") ? last : "";
+        } catch (Exception e) {
+            return "";
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 
     private static boolean isRemoteHost(String h) {

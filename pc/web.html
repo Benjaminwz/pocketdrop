@@ -92,6 +92,16 @@ const store = {
   get: k => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
   set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} },
 };
+// 從固定入口頁（GitHub Pages）跳過來時，# 後面帶著這支手機的 id 和鑰匙（# 後面的東西不會送到網路上）
+if (location.hash.startsWith("#pd=")) {
+  try {
+    const d = JSON.parse(decodeURIComponent(location.hash.slice(4)));
+    store.set("pd_id", d.id); store.set("pd_key", d.key); if (d.pc) store.set("pd_pc", d.pc);
+  } catch (e) {}
+  history.replaceState(null, "", "/web");
+}
+const LAUNCHER = "https://benjaminwz.github.io/pocketdrop/go/";
+let failures = 0;
 let devId = store.get("pd_id");
 if (!devId) { devId = "web-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); store.set("pd_id", devId); }
 let key = store.get("pd_key");
@@ -146,6 +156,7 @@ async function loop() {
       if (r.status === 401) { key = ""; store.set("pd_key", ""); continue; }
       if (!r.ok) throw new Error("HTTP " + r.status);
       setStatus(T("● 已連上：", "● Connected: ") + pcName, "on");
+      failures = 0;
       const j = await r.json();
       if (j.version) {
         if (!pageVersion) pageVersion = j.version;
@@ -154,6 +165,8 @@ async function loop() {
       if (j.phones) showPhones(j.phones);
       for (const it of j.items) { lastId = Math.max(lastId, it.id); receive(it); }
     } catch (e) {
+      // 遠端網址失效了（電腦重開會換網址）：回固定入口頁找新網址
+      if (++failures >= 3 && location.hostname.endsWith(".trycloudflare.com") && !busy) { location.href = LAUNCHER; return; }
       setStatus(T("連不上電腦，重試中…（電腦要開著口袋快傳、連同一個 Wi-Fi）",
         "Can't reach the PC, retrying… (PocketDrop must be open on the PC, same Wi-Fi)"), "warn");
       await nap(3000);

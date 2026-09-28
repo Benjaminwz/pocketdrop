@@ -75,8 +75,13 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 UPDATE_REPO = "Benjaminwz/pocketdrop"  # 到這個 GitHub 專案檢查新版；空字串 = 不檢查
+# iPhone 的固定入口（GitHub Pages）：遠端網址每次都會變，iPhone 把這頁加到主畫面，它會去找電腦現在的網址
+LAUNCHER_URL = "https://benjaminwz.github.io/pocketdrop/go/"
+LAUNCHER_ORIGIN = "https://benjaminwz.github.io"
+# 遠端網址的登記處（ntfy.sh 免費公開服務）：頻道名稱是隨機亂碼，只有配對過的手機知道
+RENDEZVOUS = "https://ntfy.sh/"
 HTTP_PORT = int(os.environ.get("POCKETDROP_PORT", "47850"))  # 改埠號只給測試用，手機 App 固定連 47850
 UDP_PORT = 47852
 # 測試用：設成 127.0.0.1 就只聽本機，不會跳防火牆
@@ -362,6 +367,7 @@ class Config:
             "auto_copy": data.get("auto_copy", True),
             "usb_only": data.get("usb_only", False),  # 純有線模式
             "remote": data.get("remote", False),  # 遠端模式（Cloudflare 臨時通道）
+            "rv": data.get("rv") or "pd-" + secrets.token_hex(16),  # 遠端網址登記處的頻道名稱
             "welcomed": data.get("welcomed", False),  # 第一次打開的連接精靈跳過了沒
             "devices": data.get("devices") or {},  # 手機（或其他電腦）id -> {"name", "key", "pc"}
             "peers": data.get("peers") or {},  # 其他電腦的 pc_id -> {"name", "host", "port", "key", "addrs", "tunnel"}
@@ -545,12 +551,29 @@ class Tunnel:
                 if m and not self.url:
                     self.url = m.group().decode()
                     self.set("on")
+                    threading.Thread(target=self.announce, daemon=True).start()
             if self.state != "off":
                 self.url = None
                 self.set("error", T("遠端通道斷掉了", "The remote tunnel stopped"))
         except Exception as e:
             self.url = None
             self.set("error", str(e))
+
+    def announce(self):
+        """把現在的遠端網址登記到 ntfy.sh（手機在外面、電腦重開換了網址時，靠這個找到新網址）。
+        ntfy.sh 只保留 12 小時，所以開著的時候每 6 小時再登記一次。"""
+        url = self.url
+        while self.state == "on" and self.url == url:
+            try:
+                req = urllib.request.Request(RENDEZVOUS + self.hub.cfg.data["rv"], data=url.encode(),
+                                             headers={"User-Agent": "PocketDrop"})
+                urllib.request.urlopen(req, timeout=20).close()
+            except Exception:
+                pass
+            for _ in range(6 * 360):
+                if self.state != "on" or self.url != url:
+                    return
+                time.sleep(10)
 
     def stop(self):
         self.url = None
@@ -742,6 +765,7 @@ class Hub:
     def info(self):
         """放在 ping / hello / poll 回應裡：電腦的位址、遠端網址、版本（手機據此知道能不能更新）。"""
         return {"addrs": pc_addresses(), "tunnel": self.tunnel_url(), "version": APP_VERSION,
+                "rv": self.cfg.data["rv"] if self.cfg.data.get("remote") else "",
                 "apk": apk_code() if os.path.exists(APK_PATH) else 0}
 
     def tunnel_url(self):
@@ -921,8 +945,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if close:
             self.send_header("Connection", "close")
             self.close_connection = True
+        self.cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def cors(self):
+        """iPhone 的固定入口頁（GitHub Pages）要能直接呼叫這台電腦的 API（只開放給那個網站）。"""
+        if self.headers.get("Origin") == LAUNCHER_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", LAUNCHER_ORIGIN)
+            self.send_header("Vary", "Origin")
+
+    def do_OPTIONS(self):
+        if not allowed_peer(self.client_address[0]) or self.tunnel_blocked():
+            self.close_connection = True
+            return
+        self.send_response(204)
+        self.cors()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Headers", "X-Key, X-Device-Id, X-Device-Name, Content-Type")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def deny(self, code, msg):
         # 沒把 body 讀完就回絕：連線得關掉，不然剩下的 body 會被當成下一個請求
@@ -2193,10 +2236,12 @@ class App:
             text(T("打開後按 Safari 的「分享 → 加入主畫面」，下次從主畫面打開就好。",
                    "Then tap Share → Add to Home Screen in Safari, and open it from there next time."))
             if self.hub.tunnel_url():
-                tk.Label(box, text=T("在外面用（遠端模式）：掃這個", "Away from home (remote mode): scan this"), bg=CARD, fg=ACCENT,
+                tk.Label(box, text=T("在家、在外面都要用（遠端模式）：掃這個", "Use it at home and away (remote mode): scan this"), bg=CARD, fg=ACCENT,
                          font=(FONT, 11, "bold")).pack(anchor="w", pady=(px(14), 0))
-                self.draw_qr(box, f"{self.hub.tunnel_url()}/?code={code}", px(3))
-                text(T("電腦版重開後遠端網址會變，到時候要再掃一次。", "The remote address changes when the PC app restarts; scan again then."), MUTED, 9)
+                frag = urllib.parse.urlencode({"rv": self.cfg.data["rv"], "code": code, "name": self.hub.pc_name})
+                self.draw_qr(box, f"{LAUNCHER_URL}#{frag}", px(3))
+                text(T("會打開口袋快傳的固定入口，把它「加入主畫面」。之後在哪裡打開，它都會自動找到這台電腦（電腦重開也沒關係）。",
+                       "It opens PocketDrop's fixed entry page. Add it to the Home Screen; wherever you open it, it finds this PC (even after the PC restarts)."), MUTED, 9)
             elif self.ts_ip:
                 tk.Label(box, text=T("在外面也要用（兩邊都開 Tailscale）", "Use it away from home too (Tailscale on both)"), bg=CARD, fg=ACCENT,
                          font=(FONT, 11, "bold")).pack(anchor="w", pady=(px(14), 0))
