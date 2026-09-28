@@ -239,30 +239,40 @@ async function pump() {
   while (queue.length) { const q = queue.shift(); await upload(q.file, q.el); }
   busy = false;
 }
+// 分段上傳：遠端模式經過 Cloudflare，一次最多只能傳 100 MB，所以一段 32 MB 接起來
+const CHUNK = 32 * 1024 * 1024;
 function upload(file, el) {
   return new Promise(resolve => {
     if (!key) { sub(el, T("✗ 還沒連上電腦", "✗ Not connected to the PC"), "bad"); return resolve(); }
-    const x = new XMLHttpRequest();
+    const uid = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
     const t0 = Date.now();
-    x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size);
-    x.setRequestHeader("X-Key", key);
-    x.setRequestHeader("Content-Type", "application/octet-stream");
-    x.upload.onprogress = ev => {
-      bar(el, ev.loaded, file.size);
-      const speed = ev.loaded * 1000 / Math.max(Date.now() - t0, 1);
-      sub(el, T("傳送中 ", "Sending ") + Math.floor(ev.loaded * 100 / Math.max(file.size, 1)) + "%  "
-        + fmt(ev.loaded) + " / " + fmt(file.size) + "  " + fmt(speed) + "/s");
+    const fail = msg => { bar(el); sub(el, msg, "bad"); resolve(); };
+    const send = offset => {
+      const end = Math.min(offset + CHUNK, file.size);
+      const x = new XMLHttpRequest();
+      x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size + "&uid=" + uid + "&offset=" + offset);
+      x.setRequestHeader("X-Key", key);
+      x.setRequestHeader("Content-Type", "application/octet-stream");
+      x.upload.onprogress = ev => {
+        const done = offset + ev.loaded;
+        bar(el, done, file.size);
+        const speed = done * 1000 / Math.max(Date.now() - t0, 1);
+        sub(el, T("傳送中 ", "Sending ") + Math.floor(done * 100 / Math.max(file.size, 1)) + "%  "
+          + fmt(done) + " / " + fmt(file.size) + "  " + fmt(speed) + "/s");
+      };
+      x.onload = () => {
+        if (x.status !== 200) return fail(T("✗ 失敗：電腦回應 ", "✗ Failed: PC replied ") + x.status);
+        if (end < file.size) return send(end);
+        bar(el);
+        sub(el, T("✓ 已傳到電腦（", "✓ Sent to PC (") + fmt(file.size) + T("）", ")"), "ok");
+        resolve();
+      };
+      x.onerror = () => fail(T("✗ 傳到一半斷掉了", "✗ The connection dropped"));
+      x.send(file.slice(offset, end));
     };
-    x.onload = () => {
-      bar(el);
-      if (x.status === 200) sub(el, T("✓ 已傳到電腦（", "✓ Sent to PC (") + fmt(file.size) + T("）", ")"), "ok");
-      else sub(el, T("✗ 失敗：電腦回應 ", "✗ Failed: PC replied ") + x.status, "bad");
-      resolve();
-    };
-    x.onerror = () => { bar(el); sub(el, T("✗ 傳到一半斷掉了", "✗ The connection dropped"), "bad"); resolve(); };
     sub(el, T("傳送中…", "Sending…"));
     bar(el, 0, file.size);
-    x.send(file);
+    send(0);
   });
 }
 $("sendText").onclick = async () => {

@@ -28,6 +28,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -250,6 +251,22 @@ public class MainActivity extends Activity implements Hub.Listener {
         LinearLayout logCard = card(root, T("紀錄", "Activity"));
         list = vertical();
         logCard.addView(list);
+
+        LinearLayout priv = card(root, T("隱私", "Privacy"));
+        Switch usbOnly = new Switch(this);
+        usbOnly.setText(T("純有線模式", "Cable-only mode"));
+        usbOnly.setTextSize(15);
+        usbOnly.setTextColor(TEXT);
+        usbOnly.setChecked(hub.usbOnly);
+        int[][] states = {{android.R.attr.state_checked}, {}};
+        usbOnly.setThumbTintList(new ColorStateList(states, new int[]{ACCENT, 0xFFF4F4F4}));
+        usbOnly.setTrackTintList(new ColorStateList(states, new int[]{0x883558D4, 0x44000000}));
+        usbOnly.setOnCheckedChangeListener((b, on) -> hub.setUsbOnly(on));
+        priv.addView(usbOnly, new LinearLayout.LayoutParams(-1, -2));
+        TextView privText = label(T("只用傳輸線（USB 網路共用）連電腦，完全不走 Wi-Fi，也不會在 Wi-Fi 上找電腦。電腦版也有同名的開關，兩邊都開最安全。",
+                "Only connect over the USB cable (USB tethering). Nothing goes over Wi-Fi, and the phone won't look for PCs on Wi-Fi. The PC app has the same switch; turn on both for the most privacy."), 13, MUTED, false);
+        privText.setPadding(0, dp(6), 0, 0);
+        priv.addView(privText);
 
         TextView foot = label(T("收到的檔案存在「下載／PocketDrop」資料夾\n電腦傳東西過來時，這個 App 要開著", "Received files are saved to Download/PocketDrop\nKeep this app open to receive from the PC"), 12, MUTED, false);
         foot.setGravity(Gravity.CENTER);

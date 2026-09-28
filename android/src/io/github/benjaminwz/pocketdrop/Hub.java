@@ -115,6 +115,8 @@ public class Hub {
     private volatile String host, key, pcId, pcName;
     private volatile int port;
     private volatile boolean active, userRetry;
+    /** 純有線模式：只用傳輸線（USB 網路共用）連電腦，不走 Wi-Fi，也不在 Wi-Fi 上廣播找電腦。 */
+    public volatile boolean usbOnly;
     private volatile String manualHost;
     private volatile Pc chosen;
     private final Object wake = new Object();
@@ -130,6 +132,7 @@ public class Hub {
         key = prefs.getString("key", null);
         pcId = prefs.getString("pc_id", "");
         pcName = prefs.getString("pc_name", T("電腦", "PC"));
+        usbOnly = prefs.getBoolean("usb_only", false);
         Thread t = new Thread(this::loop, "pocketdrop-net");
         t.setDaemon(true);
         t.start();
@@ -172,6 +175,17 @@ public class Hub {
 
     public void choose(Pc pc) {
         chosen = pc;
+        kick();
+    }
+
+    public void setUsbOnly(boolean on) {
+        usbOnly = on;
+        prefs.edit().putBoolean("usb_only", on).apply();
+        if (on && state == CONNECTED && !isUsbHost(host)) {
+            setState(SEARCHING, T("純有線模式：改用傳輸線連線…", "Cable-only mode: switching to the USB cable…"));
+        } else if (state != CONNECTED) {
+            userRetry = true;
+        }
         kick();
     }
 
@@ -266,6 +280,8 @@ public class Hub {
             try {
                 if (state != CONNECTED) {
                     connect();
+                } else if (usbOnly && !isUsbHost(host)) {
+                    setState(SEARCHING, T("純有線模式：改用傳輸線連線…", "Cable-only mode: switching to the USB cable…"));
                 } else {
                     // 插了線、開了 USB 網路共用，但還在走 Wi-Fi：試著改走傳輸線；在切過去之前問得勤一點
                     boolean usbWaiting = !isUsbHost(host) && !usbAddresses().isEmpty();
@@ -311,7 +327,7 @@ public class Hub {
         if (state != NOT_FOUND) setState(SEARCHING, T("正在尋找電腦…", "Looking for your PC…"));
 
         // 1. 上次那台電腦還在原本的 IP（手機開著 USB 網路共用時跳過，直接去找走傳輸線的路）
-        if (key != null && host != null && (usbAddresses().isEmpty() || isUsbHost(host))) {
+        if (key != null && host != null && (usbAddresses().isEmpty() || isUsbHost(host)) && (!usbOnly || isUsbHost(host))) {
             int code = ping(host, port);
             if (code == 200) {
                 setConnected();
@@ -321,6 +337,8 @@ public class Hub {
         }
         // 2. 在 Wi-Fi 裡喊一聲，看哪台電腦開著口袋快傳
         List<Pc> found = discover();
+        if (usbOnly) found.removeIf(p -> !p.usb);
+        String usbHint = T("純有線模式：請用傳輸線接上電腦，並開啟「USB 網路共用」", "Cable-only mode: plug into the PC with a USB cable and turn on USB tethering");
         if (key != null) {
             for (Pc p : found) {
                 if (p.id.equals(pcId)) {
@@ -333,8 +351,12 @@ public class Hub {
                     if (code == 401) throw new Unauthorized();
                 }
             }
+            // 3. 不在同一個網路（例如在外面）：試電腦告訴過我們的其他位址，例如 Tailscale
+            if (!usbOnly && tryRemote()) return;
             // 配對過的電腦沒開：不自動去連別台，等它開
-            setState(NOT_FOUND, T("找不到電腦「", "Can't find \"") + pcName + T("」。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。", "\". Make sure PocketDrop is open on the PC and both are on the same Wi-Fi."));
+            setState(NOT_FOUND, usbOnly ? usbHint : T("找不到電腦「", "Can't find \"") + pcName
+                    + T("」。請確認電腦開著口袋快傳、跟手機連同一個 Wi-Fi（在外面的話兩邊都要開 Tailscale）。",
+                        "\". Make sure PocketDrop is open on the PC and both are on the same Wi-Fi (or both on Tailscale when away)."));
             sleep(4000);
             return;
         }
@@ -345,7 +367,7 @@ public class Hub {
             }
         }
         if (found.isEmpty()) {
-            setState(NOT_FOUND, T("找不到電腦。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。", "No PC found. Make sure PocketDrop is open on the PC and both are on the same Wi-Fi."));
+            setState(NOT_FOUND, usbOnly ? usbHint : T("找不到電腦。請確認電腦開著口袋快傳，而且跟手機連同一個 Wi-Fi。", "No PC found. Make sure PocketDrop is open on the PC and both are on the same Wi-Fi."));
             sleep(4000);
             return;
         }
@@ -377,6 +399,7 @@ public class Hub {
                 key = j.getString("key");
                 pcId = j.optString("id", "");
                 pcName = j.optString("name", T("電腦", "PC"));
+                learnAddrs(j);
                 prefs.edit().putString("key", key).putString("pc_id", pcId).putString("pc_name", pcName).apply();
                 saveHost(p);
                 setConnected();
@@ -408,16 +431,82 @@ public class Hub {
     }
 
     private void setConnected() {
-        setState(CONNECTED, T("已連上：", "Connected: ") + pcName + (isUsbHost(host) ? T("（USB 線）", " (USB)") : ""));
+        setState(CONNECTED, T("已連上：", "Connected: ") + pcName
+                + (isUsbHost(host) ? T("（USB 線）", " (USB)") : isRemoteHost(host) ? T("（遠端）", " (remote)") : ""));
+    }
+
+    /** 在家裡的網路找不到電腦時，試電腦告訴過我們的其他位址：Tailscale 的 100.x.x.x，
+     *  最後試電腦「遠端模式」的網址（https://….trycloudflare.com，在外面也連得到）。 */
+    private boolean tryRemote() throws Unauthorized {
+        List<String> candidates = new ArrayList<>();
+        Collections.addAll(candidates, prefs.getString("addrs", "").split(","));
+        candidates.add(prefs.getString("tunnel", ""));
+        for (String a : candidates) {
+            a = a.trim();
+            if (a.isEmpty() || a.equals(host)) continue;
+            int code = ping(a, port, a.startsWith("https://") ? 8000 : 3000);
+            if (code == 200) {
+                Pc p = new Pc();
+                p.host = a;
+                p.port = port;
+                saveHost(p);
+                setConnected();
+                return true;
+            }
+            if (code == 401) throw new Unauthorized();
+        }
+        return false;
+    }
+
+    /** 記住電腦的所有位址（電腦在打招呼和 ping 的回應裡會附上）。 */
+    private void learnAddrs(JSONObject j) {
+        learnTunnel(j);
+        JSONArray a = j.optJSONArray("addrs");
+        if (a == null) return;
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < a.length() && i < 8; i++) {
+            if (b.length() > 0) b.append(',');
+            b.append(a.optString(i));
+        }
+        prefs.edit().putString("addrs", b.toString()).apply();
+    }
+
+    /** 電腦開了遠端模式時會告訴我們網址（電腦每次重開都會變，所以每次連上都更新）。 */
+    private void learnTunnel(JSONObject j) {
+        if (!j.has("tunnel")) return;
+        prefs.edit().putString("tunnel", j.isNull("tunnel") ? "" : j.optString("tunnel", "")).apply();
+    }
+
+    private static boolean isRemoteHost(String h) {
+        if (h != null && h.startsWith("https://")) return true;  // 電腦的遠端模式（Cloudflare 通道）
+        // Tailscale 的位址都在 100.64.0.0 ~ 100.127.255.255
+        if (h == null || !h.startsWith("100.")) return false;
+        try {
+            int b = Integer.parseInt(h.split("\\.")[1]);
+            return b >= 64 && b <= 127;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private int ping(String h, int p) {
+        return ping(h, p, 1500);
+    }
+
+    private int ping(String h, int p, int connectMs) {
         HttpURLConnection c = null;
         try {
             c = open(h, p, "/api/ping", key);
-            c.setConnectTimeout(1500);
+            c.setConnectTimeout(connectMs);
             c.setReadTimeout(3000);
-            return c.getResponseCode();
+            int code = c.getResponseCode();
+            if (code == 200) {
+                try {
+                    learnAddrs(new JSONObject(readAll(c.getInputStream())));
+                } catch (JSONException ignored) {
+                }
+            }
+            return code;
         } catch (IOException e) {
             return -1;
         } finally {
@@ -435,7 +524,7 @@ public class Hub {
             s.setBroadcast(true);
             s.setSoTimeout(300);
             byte[] msg = "POCKETDROP?".getBytes("UTF-8");
-            List<InetAddress> targets = broadcastTargets();
+            List<InetAddress> targets = broadcastTargets(usbOnly);
             byte[] buf = new byte[2048];
             long start = System.currentTimeMillis();
             int round = 0;
@@ -480,8 +569,14 @@ public class Hub {
         return found;
     }
 
-    private static List<InetAddress> broadcastTargets() {
+    private static List<InetAddress> broadcastTargets(boolean usbOnly) {
         List<InetAddress> t = new ArrayList<>();
+        if (usbOnly) {  // 純有線模式：只在傳輸線那邊喊，Wi-Fi 上的人看不到
+            for (InterfaceAddress ia : usbAddresses()) {
+                if (ia.getBroadcast() != null && !t.contains(ia.getBroadcast())) t.add(ia.getBroadcast());
+            }
+            return t;
+        }
         try {
             t.add(InetAddress.getByName("255.255.255.255"));
         } catch (IOException ignored) {
@@ -545,6 +640,11 @@ public class Hub {
 
     private static Pc parseHost(String s) {
         s = s.trim();
+        if (s.startsWith("https://")) {  // 遠端模式的網址
+            Pc p = new Pc();
+            p.host = s.replaceAll("/+$", "");
+            return p;
+        }
         if (s.startsWith("http://")) s = s.substring(7);
         int slash = s.indexOf('/');
         if (slash >= 0) s = s.substring(0, slash);
@@ -590,7 +690,9 @@ public class Hub {
             int code = c.getResponseCode();
             if (code == 401) throw new Unauthorized();
             if (code != 200) throw new IOException("HTTP " + code);
-            items = new JSONObject(readAll(c.getInputStream())).getJSONArray("items");
+            JSONObject resp = new JSONObject(readAll(c.getInputStream()));
+            items = resp.getJSONArray("items");
+            learnTunnel(resp);
         } finally {
             c.disconnect();
         }
@@ -747,6 +849,22 @@ public class Hub {
             }
             HttpURLConnection c = null;
             try {
+                if (e.total > 0 && host.startsWith("https://")) {
+                    int code = uploadChunks(uri, e);
+                    if (code == 200) {
+                        e.state = Entry.OK;
+                        changed();
+                        return;
+                    }
+                    if (code == 401) {
+                        clearKey();
+                        setState(SEARCHING, T("電腦取消了配對，重新連線…", "The PC unpaired this phone. Reconnecting…"));
+                        kick();
+                        fail(e, T("電腦取消了配對，請重新傳一次", "The PC unpaired this phone. Please send it again"));
+                        return;
+                    }
+                    throw new IOException("HTTP " + code);
+                }
                 // 第二次改用不指定大小的方式傳，以免手機回報的檔案大小不準
                 long size = attempt == 0 ? e.total : -1;
                 c = open(host, port, "/api/upload?name=" + URLEncoder.encode(e.name, "UTF-8") + "&size=" + size, key);
@@ -793,6 +911,52 @@ public class Hub {
         changed();
     }
 
+    private static final int CHUNK = 32 * 1024 * 1024;
+
+    /** 遠端模式經過 Cloudflare，一次最多只能傳 100 MB：切成 32 MB 一段一段傳，電腦那邊接起來。回傳最後的 HTTP 狀態碼。 */
+    private int uploadChunks(Uri uri, Entry e) throws IOException {
+        String uid = UUID.randomUUID().toString();
+        String name = URLEncoder.encode(e.name, "UTF-8");
+        e.state = Entry.RUNNING;
+        e.done = 0;
+        e.error = null;
+        e.startedAt = System.currentTimeMillis();
+        changed();
+        byte[] buf = new byte[256 * 1024];
+        try (InputStream in = app.getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException(T("讀不到檔案", "Can't read the file"));
+            long offset = 0;
+            do {
+                long len = Math.min(CHUNK, e.total - offset);
+                HttpURLConnection c = open(host, port, "/api/upload?name=" + name + "&size=" + e.total + "&uid=" + uid + "&offset=" + offset, key);
+                try {
+                    c.setRequestMethod("POST");
+                    c.setDoOutput(true);
+                    c.setReadTimeout(120000);
+                    c.setRequestProperty("Content-Type", "application/octet-stream");
+                    c.setFixedLengthStreamingMode(len);
+                    try (OutputStream out = c.getOutputStream()) {
+                        long left = len;
+                        while (left > 0) {
+                            int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                            if (n < 0) throw new IOException(T("檔案比預期短", "The file is shorter than expected"));
+                            out.write(buf, 0, n);
+                            left -= n;
+                            e.done += n;
+                            changed();
+                        }
+                    }
+                    int code = c.getResponseCode();
+                    if (code != 200) return code;
+                } finally {
+                    c.disconnect();
+                }
+                offset += len;
+            } while (offset < e.total);
+        }
+        return 200;
+    }
+
     // ------------------------------------------------------------ 小工具
 
     private void copy(InputStream in, OutputStream out, Entry e) throws IOException {
@@ -812,7 +976,9 @@ public class Hub {
     }
 
     private HttpURLConnection open(String h, int p, String path, String k) throws IOException {
-        HttpURLConnection c = (HttpURLConnection) new URL("http", h, p, path).openConnection();
+        // h 可以是 IP，也可以是遠端模式的完整網址（https://….trycloudflare.com）
+        URL u = h.startsWith("https://") || h.startsWith("http://") ? new URL(h + path) : new URL("http", h, p, path);
+        HttpURLConnection c = (HttpURLConnection) u.openConnection();
         c.setConnectTimeout(4000);
         c.setReadTimeout(30000);
         c.setUseCaches(false);
