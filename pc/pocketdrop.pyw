@@ -75,7 +75,7 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 # Android App 的網址開頭和套件名稱：網頁上的「用 App 打開」靠這兩個叫出 App
 APP_SCHEME = "pocketdrop"
 APP_PACKAGE = "io.github.benjaminwz.pocketdrop"
@@ -410,6 +410,32 @@ def peer_bases(peer):
     return out
 
 
+def lookup_tunnel(rv):
+    """到 ntfy.sh 查某台電腦現在的遠端網址（對方電腦重開後網址會換，靠這個找到新的）。查不到回傳空字串。"""
+    req = urllib.request.Request(RENDEZVOUS + urllib.parse.quote(rv) + "/json?poll=1&since=all",
+                                 headers={"User-Agent": "PocketDrop"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        lines = r.read().decode("utf-8", "replace").splitlines()
+    url = ""
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("event") == "message":
+            url = str(e.get("message", "")).strip()
+    return url if re.fullmatch(r"https://[a-z0-9-]+\.trycloudflare\.com", url) else ""
+
+
+def parse_invite(text):
+    """另一台電腦的邀請連結（跟手機掃的萬用 QR code 同一個網址）：取出 rv（登記頻道）和配對碼。不是邀請連結回傳 None。"""
+    if "#" not in text:
+        return None
+    q = urllib.parse.parse_qs(text.split("#", 1)[1])
+    rv, code = (q.get("rv") or [""])[0], (q.get("code") or [""])[0]
+    return (rv, code) if re.fullmatch(r"pd-[0-9a-f]{32}", rv) else None
+
+
 def discover_pcs(own_id, extra=()):
     """在區網裡喊一聲，找開著口袋快傳的其他電腦（跟手機找電腦的方式一樣）。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -616,13 +642,14 @@ class Hub:
         self.via_usb = {}  # 手機 id -> 是不是走 USB 線
         self.via_remote = {}  # 手機 id -> 是不是從遠端通道進來
         self.peer_online = {}  # 其他電腦的 id -> 上次試的時候連不連得到
+        self.rv_checked = {}  # 其他電腦的 id -> 上次到 ntfy.sh 查它遠端網址的時間
         self.tunnel = None  # 遠端模式（啟動時設定）
         self.uploads = {}  # 分段上傳中的檔案：上傳 id -> 狀態
         self.upload_lock = threading.Lock()
         self.pair_lock = threading.Lock()  # 一次只問一支手機
         self.file_lock = threading.Lock()
         self.pc_name = socket.gethostname() or T("電腦", "PC")
-        self.pair_code = None  # (QR code 裡的配對碼, 到期時間)
+        self.pair_codes = []  # [(QR code／邀請連結裡的配對碼, 到期時間)]
 
     def emit(self, *event):
         self.events.put(event)
@@ -660,13 +687,14 @@ class Hub:
 
     def new_pair_code(self):
         """QR code 裡帶的配對碼：掃了電腦螢幕上的 QR code，代表人就在電腦前面，不用再按允許。10 分鐘內有效。"""
-        self.pair_code = (secrets.token_urlsafe(8), time.time() + 600)
-        return self.pair_code[0]
+        now = time.time()
+        self.pair_codes = [c for c in self.pair_codes if c[1] > now][-4:]  # 同時有效的：手機的 QR code、給電腦的邀請連結
+        self.pair_codes.append((secrets.token_urlsafe(8), now + 600))
+        return self.pair_codes[-1][0]
 
     def check_pair_code(self, code):
-        pc = self.pair_code
-        return bool(code and pc and time.time() < pc[1]
-                    and secrets.compare_digest(code.encode("utf-8", "replace"), pc[0].encode()))
+        now, raw = time.time(), code.encode("utf-8", "replace")
+        return bool(code) and any(now < exp and secrets.compare_digest(raw, c.encode()) for c, exp in self.pair_codes)
 
     def add_device(self, did, name, pc=False):
         with self.cfg.lock:
@@ -698,7 +726,7 @@ class Hub:
             peer = self.cfg.data["peers"].setdefault(pid, {})
             peer.update(name=name, key=info["key"], port=int(info.get("port") or HTTP_PORT),
                         addrs=[a for a in info.get("addrs") or [] if isinstance(a, str)][:8],
-                        tunnel=info.get("tunnel") or "")
+                        tunnel=info.get("tunnel") or "", rv=info.get("rv") or peer.get("rv", ""))
             if host:
                 peer["host"] = host
             peer.setdefault("host", (peer["addrs"] or [""])[0])
@@ -709,7 +737,19 @@ class Hub:
         peer = self.cfg.data["peers"].get(pid)
         if not peer:
             return None
-        for base in peer_bases(peer):
+        bases = peer_bases(peer)
+        for base in bases + [None]:
+            if base is None:
+                # 都連不到：對方可能重開過、遠端網址換了，到 ntfy.sh 查新的（最多 2 分鐘查一次）
+                if not peer.get("rv") or time.time() - self.rv_checked.get(pid, 0) < 120:
+                    break
+                self.rv_checked[pid] = time.time()
+                try:
+                    base = lookup_tunnel(peer["rv"])
+                except Exception:
+                    break
+                if not base or base in bases:
+                    break
             try:
                 info = peer_json(base + "/api/ping", peer["key"], timeout=8 if base.startswith("https") else 3)
             except Exception:
@@ -717,6 +757,8 @@ class Hub:
             peer["name"] = info.get("name", peer.get("name"))
             peer["addrs"] = [a for a in info.get("addrs") or [] if isinstance(a, str)][:8] or peer.get("addrs", [])
             peer["tunnel"] = info.get("tunnel") or ""
+            if "rv" in info:
+                peer["rv"] = info["rv"] or ""
             if base.startswith("http://"):
                 peer["host"] = urllib.parse.urlsplit(base).hostname
             self.peer_online[pid] = True
@@ -724,20 +766,21 @@ class Hub:
         self.peer_online[pid] = False
         return None
 
-    def pair_pc(self, host, port=HTTP_PORT):
-        """跟另一台電腦配對（對方要按「允許」）。同時把「對方傳東西過來要用的鑰匙」交給它，一次就能互傳。"""
+    def pair_pc(self, host, port=HTTP_PORT, code=""):
+        """跟另一台電腦配對（對方要按「允許」；帶了邀請連結的配對碼就不用）。
+        同時把「對方傳東西過來要用的鑰匙」交給它，一次就能互傳。"""
         pc_id = self.cfg.data["pc_id"]
         my_key = secrets.token_urlsafe(24)
         body = json.dumps({"peer": {"id": pc_id, "key": my_key, "port": HTTP_PORT, **self.info()}}).encode("utf-8")
         base = host.rstrip("/") if host.startswith("https://") else f"http://{host}:{port}"
-        resp = peer_json(base + "/api/hello", None, data=body, timeout=130,
+        resp = peer_json(base + "/api/hello" + ("?code=" + urllib.parse.quote(code) if code else ""), None, data=body, timeout=130,
                          headers={"X-Device-Id": "pc-" + pc_id, "X-Device-Name": urllib.parse.quote(self.pc_name),
                                   "Content-Type": "application/json"})
         pid, name = resp["id"], resp.get("name", "PC")
         with self.cfg.lock:
             self.cfg.data["devices"]["pc-" + pid] = {"name": name, "key": my_key, "pc": True}
-        self.save_peer(pid, name, {"key": resp["key"], "port": port, "addrs": resp.get("addrs"), "tunnel": resp.get("tunnel")},
-                       None if host.startswith("https://") else host)
+        self.save_peer(pid, name, {"key": resp["key"], "port": port, "addrs": resp.get("addrs"), "tunnel": resp.get("tunnel"),
+                                   "rv": resp.get("rv")}, None if host.startswith("https://") else host)
         self.peer_online[pid] = True
         return name
 
@@ -2099,12 +2142,28 @@ class App:
         self.pc_list.pack(fill="x", pady=(px(12), 0))
         row = tk.Frame(box, bg=CARD)
         row.pack(fill="x", pady=(px(12), 0))
-        tk.Label(row, text=T("或輸入對方的 IP／遠端網址：", "Or type its IP / remote address:"), bg=CARD, fg=TEXT, font=(FONT, 10)).pack(anchor="w")
+        tk.Label(row, text=T("或貼上對方的邀請連結／輸入 IP：", "Or paste its invite link / type its IP:"), bg=CARD, fg=TEXT, font=(FONT, 10)).pack(anchor="w")
         self.pc_entry = tk.Entry(row, font=(FONT, 10), relief="flat", bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
         self.pc_entry.pack(side="left", fill="x", expand=True, pady=(px(4), 0), ipady=px(4))
         FlatButton(row, T("連接", "Connect"), lambda: self.pair_pc(self.pc_entry.get().strip()), small=True).pack(side="left", padx=(px(8), 0), pady=(px(4), 0))
         self.pc_status = tk.Label(box, text="", bg=CARD, fg=ACCENT, font=(FONT, 10), justify="left", wraplength=px(420))
         self.pc_status.pack(anchor="w", pady=(px(10), 0))
+        # 不在同一個網路：用邀請連結（對方貼上就配對，不用有人在這台電腦前按允許）
+        away = tk.Frame(box, bg=ACCENT_SOFT)
+        away.pack(fill="x", pady=(px(14), 0))
+        tk.Label(away, text=T("另一台電腦不在身邊？", "The other PC isn't nearby?"), bg=ACCENT_SOFT, fg=TEXT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=px(10), pady=(px(8), 0))
+        if self.hub.tunnel_url() and not self.cfg.data.get("usb_only"):
+            tk.Label(away, text=T("按「複製邀請連結」，傳給那台電腦（例如用 LINE 傳給自己），在那台電腦的「連接電腦」貼上就好。"
+                                  "10 分鐘內有效，不用按允許。配對過後，兩台都開著「遠端模式」就能隔空互傳。",
+                                  "Click \"Copy invite link\", send it to that PC (e.g. message it to yourself) and paste it in its \"Connect a PC\". "
+                                  "Valid for 10 minutes, no Allow needed. Once paired, both PCs can send to each other from anywhere while Remote mode is on."),
+                     bg=ACCENT_SOFT, fg=MUTED, font=(FONT, 10), justify="left", wraplength=px(400)).pack(anchor="w", padx=px(10), pady=(px(4), 0))
+            FlatButton(away, T("複製邀請連結", "Copy invite link"), self.copy_invite, small=True).pack(anchor="w", padx=px(10), pady=px(8))
+        else:
+            tk.Label(away, text=T("兩台電腦都在主畫面勾「遠端模式」，再回來這裡，就能用邀請連結配對；配對過後在哪裡都能互傳。",
+                                  "Turn on Remote mode on both PCs, then come back here to pair with an invite link. Once paired, they can send to each other from anywhere."),
+                     bg=ACCENT_SOFT, fg=MUTED, font=(FONT, 10), justify="left", wraplength=px(400)).pack(anchor="w", padx=px(10), pady=(px(4), px(8)))
         foot = tk.Frame(box, bg=CARD)
         foot.pack(fill="x", pady=(px(14), 0))
         FlatButton(foot, T("重新搜尋", "Search again"), self.search_pcs, primary=False).pack(side="left")
@@ -2135,8 +2194,40 @@ class App:
         self.pc_status.configure(fg=MUTED, text=T(f"找到 {len(pcs)} 台。" if pcs else "同一個網路裡找不到其他開著口袋快傳的電腦。可以輸入對方的 IP（對方視窗上方有寫）。",
                                                   f"Found {len(pcs)}." if pcs else "No other PC running PocketDrop was found on this network. You can type its IP (shown at the top of its window)."))
 
+    def invite_url(self, code):
+        """萬用連結：手機掃了會自己判斷在家還是在外面；另一台電腦貼上也能用它配對。"""
+        return LAUNCHER_URL + "#" + urllib.parse.urlencode({
+            "rv": self.cfg.data["rv"], "code": code, "name": self.hub.pc_name,
+            "lan": f"http://{self.ip}:{HTTP_PORT}", "scheme": APP_SCHEME, "pkg": APP_PACKAGE})
+
+    def copy_invite(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.invite_url(self.hub.new_pair_code()))
+        self.pc_status.configure(text=T("✓ 已複製邀請連結，10 分鐘內到另一台電腦貼上。", "✓ Invite link copied. Paste it on the other PC within 10 minutes."), fg=OK_COLOR)
+
     def pair_pc(self, addr):
         if not addr:
+            return
+        invite = parse_invite(addr)
+        if invite:
+            if invite[0] == self.cfg.data["rv"]:
+                self.pc_status.configure(text=T("✗ 這是這台電腦自己的邀請連結，要到另一台電腦貼上", "✗ That's this PC's own invite link; paste it on the other PC"), fg=BAD_COLOR)
+                return
+            self.pc_status.configure(text=T("◌ 正在找對方的電腦…", "◌ Looking for the other PC…"), fg=ACCENT)
+
+            def run_invite():
+                try:
+                    base = lookup_tunnel(invite[0])
+                    if not base:
+                        raise ConnectionError(T("找不到對方的遠端網址，請確認對方開著口袋快傳而且勾了「遠端模式」",
+                                                "Can't find the other PC; make sure PocketDrop is open there with Remote mode on"))
+                    self.hub.emit("pc_paired", True, self.hub.pair_pc(base, HTTP_PORT, invite[1]))
+                except urllib.error.HTTPError as e:
+                    self.hub.emit("pc_paired", False, T("對方沒有允許（邀請連結可能過期了，請重新複製一次）",
+                                                        "The other PC declined (the invite link may have expired; copy a new one)") if e.code == 403 else f"HTTP {e.code}")
+                except Exception as e:
+                    self.hub.emit("pc_paired", False, str(e) if isinstance(e, ConnectionError) else T(f"連不上（{e}）", f"Couldn't connect ({e})"))
+            threading.Thread(target=run_invite, daemon=True).start()
             return
         host, port = addr, HTTP_PORT
         if not addr.startswith("https://"):
@@ -2224,9 +2315,7 @@ class App:
         # 萬用 QR code：開了遠端模式時，改指向固定入口頁，它會自己判斷在家還是在外面、Android 還是 iPhone
         universal = bool(self.hub.tunnel_url()) and not self.cfg.data.get("usb_only")
         if universal:
-            url = LAUNCHER_URL + "#" + urllib.parse.urlencode({
-                "rv": self.cfg.data["rv"], "code": code, "name": self.hub.pc_name,
-                "lan": f"http://{self.ip}:{HTTP_PORT}", "scheme": APP_SCHEME, "pkg": APP_PACKAGE})
+            url = self.invite_url(code)
         if page == "home":
             title(T("連接手機", "Connect a phone"))
             text(T("要連哪一種手機？", "What kind of phone?"))

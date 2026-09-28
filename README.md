@@ -13,7 +13,7 @@ Android 和 iPhone 都能用，不用註冊任何帳號。Android App 只有 <b>
 ## 特色
 
 - **雙向傳檔：** 手機 → 電腦、電腦 → 手機，資料夾也可以；也能傳文字和網址，收到會自動複製
-- **電腦對電腦：** 按「連接電腦」找到同一個網路裡的另一台電腦，對方按一次「允許」就能互傳，資料夾結構會保留；遠端模式也適用
+- **電腦對電腦：** 按「連接電腦」找到同一個網路裡的另一台電腦，對方按一次「允許」就能互傳，資料夾結構會保留。不在身邊的電腦：兩台都勾「遠端模式」，一台按「複製邀請連結」、另一台貼上就配對好（不用按允許），之後在哪裡都能互傳，對方電腦重開換了遠端網址也會自己找到
 - **手機對手機：** 手機可以選「傳給」另一支手機，由電腦幫忙轉送（Android、iPhone 混著也行，對方打開 App 或網頁就會收到）
 - **一對多：** 配對好幾支手機時，可以勾選「傳給」哪幾支，一次傳給全部（Android、iPhone 混著也行）；沒開著的手機之後打開會補收
 - **USB 線一插就配對：** 手機用傳輸線接電腦、開「USB 網路共用」，就自動配對，不用按任何確認；插著線時會自動改走傳輸線，沒有 Wi-Fi 也能傳
@@ -101,10 +101,10 @@ python pc/pocketdrop.pyw
 **全部打包**（Windows）：先準備好下面 Android 的工具、`pip install pyinstaller`，以及 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.8.0
+powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.9.0
 ```
 
-這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.8.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.8.0 → 10800）。
+這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.9.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.9.0 → 10900）。
 
 **只做 Android App：** 不需要 Android Studio 或 Gradle，只要 JDK 17 和 Android SDK 命令列工具：
 
@@ -130,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
   - Android：用 `pocketdrop://pair?host=…&rv=…&code=…` 叫出 App，App 先試區網，再查遠端網址，用配對碼配對。
 - **遠端模式：** 電腦版執行 `cloudflared tunnel --url`，把拿到的網址放在 `/api/ping`、`/api/poll` 的回應裡，手機記住後，在外面找不到電腦時就改連它。Cloudflare 每次上傳最多 100 MB，所以上傳一律切成 32 MB 一段（`uid` + `offset`）。從通道進來的連線不能用本機專用的功能。
 - **更新：** 電腦版問 GitHub 的 `releases/latest`，下載對應的檔案並核對 GitHub 提供的 SHA-256。安裝版用新的安裝檔靜默安裝（`/SILENT`）；免安裝版等程式關掉後換掉 exe。手機 App 從 `/api/ping`、`/api/poll` 的 `apk` 欄位知道電腦帶著哪一版，比自己新就從電腦下載，交給系統的 PackageInstaller 安裝。
-- **電腦對電腦：** 配對時發起的電腦會把「對方傳東西過來要用的鑰匙」一起交給對方，所以按一次允許就能雙向傳。傳送是直接推過去（分段上傳，帶 `dir` 保留資料夾），不用排隊。
+- **電腦對電腦：** 配對時發起的電腦會把「對方傳東西過來要用的鑰匙」一起交給對方，所以按一次允許就能雙向傳。傳送是直接推過去（分段上傳，帶 `dir` 保留資料夾），不用排隊。也會記住對方的登記頻道（`rv`），遠端網址連不到時到 ntfy.sh 查新的（最多 2 分鐘查一次）。邀請連結就是手機用的萬用連結，貼上後會用裡面的 `rv` 找到對方、用配對碼免按允許。
 - **手機對手機：** 手機上傳或傳文字時帶 `to=另一支手機`，電腦把檔案放暫存資料夾，排給那支手機，送完就刪掉。
 - **網頁版：** 電腦版在 `/web` 提供同一套功能的網頁，走一樣的 API。
 - **QR code 配對：** QR code 網址裡帶一個 10 分鐘有效的配對碼，帶著它來打招呼的手機直接配對。
@@ -147,7 +147,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 **PocketDrop** sends files and text between your phone (Android or iPhone) and your PC. It works over the same Wi-Fi, over a single USB cable, or from anywhere with remote mode. There's no account and no sign-up, and the Android app is about 40 KB (plain Java, zero dependencies).
 
 - **Two-way transfer:** files and whole folders both ways, plus text and links. Text you receive is copied automatically.
-- **PC to PC:** click "Connect a PC" and the other PC clicks Allow once; after that both can send to each other (folders keep their structure, and it works in remote mode too).
+- **PC to PC:** click "Connect a PC" and the other PC clicks Allow once; after that both can send to each other (folders keep their structure). For a PC somewhere else: turn on Remote mode on both, click "Copy invite link" on one and paste it on the other (no Allow needed). After that they reach each other from anywhere, even after the remote address changes.
 - **Phone to phone:** pick another phone under "Send to" and the PC relays it (Android and iPhone mixed). The other phone gets it when it opens the app or page.
 - **One-to-many:** with several phones paired, tick which ones to send to (Android and iPhone mixed). Phones that are offline pick it up later.
 - **USB cable pairing:** plug in and turn on USB tethering, and the phone pairs itself with no confirmation. While the cable is plugged in, transfers use it, so it also works without Wi-Fi.
