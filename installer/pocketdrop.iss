@@ -83,6 +83,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""P
 #endif
 ; 用原本的使用者身分（不是系統管理員）打開，不然從檔案總管拖檔案進視窗會被 Windows 擋掉
 Filename: "{app}\PocketDrop.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; 從程式裡按「更新」時是靜默安裝（/SILENT），裝完直接重新打開
+Filename: "{app}\PocketDrop.exe"; Flags: nowait skipifnotsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/im PocketDrop.exe /f"; Flags: runhidden; RunOnceId: "KillApp"

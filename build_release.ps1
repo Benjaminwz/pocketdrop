@@ -1,10 +1,10 @@
 # Build everything for a release: PocketDrop.apk, dist\PocketDrop.exe (portable) and dist\PocketDrop-Setup-<ver>.exe.
-# Usage:  powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.4.0 -VersionCode 4 [-Test]
+# Usage:  powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.5.0 [-Test]
+#   The Android versionCode is derived from the version: 1.5.0 -> 10500 (the PC app uses the same rule to offer phone updates).
 #   -Test builds the installer as TESTBUILD (no admin, no shortcuts in Start menu, no firewall rule).
 # Needs: the Android tools for build_apk.ps1, Python with PyInstaller + requirements.txt, and Inno Setup 6.
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [Parameter(Mandatory = $true)][int]$VersionCode,
     [switch]$Test
 )
 $ErrorActionPreference = "Stop"
@@ -14,7 +14,10 @@ $Root = $PSScriptRoot
 $line = Select-String -Path "$Root\pc\pocketdrop.pyw" -Pattern '^APP_VERSION = "(.+)"' | Select-Object -First 1
 if (-not $line -or $line.Matches[0].Groups[1].Value -ne $Version) { throw "APP_VERSION in pc\pocketdrop.pyw is not $Version" }
 
-Write-Host "== APK"
+$parts = ($Version.Split(".") + @("0", "0", "0"))[0..2] | ForEach-Object { [int]$_ }
+$VersionCode = $parts[0] * 10000 + $parts[1] * 100 + $parts[2]
+
+Write-Host "== APK (versionCode $VersionCode)"
 & "$Root\build_apk.ps1" -VersionCode $VersionCode -VersionName $Version
 if (-not $?) { throw "APK build failed" }
 

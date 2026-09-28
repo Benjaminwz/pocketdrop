@@ -1,10 +1,13 @@
 package io.github.benjaminwz.pocketdrop;
 
+import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageInstaller;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
@@ -117,6 +120,14 @@ public class Hub {
     private volatile boolean active, userRetry;
     /** 純有線模式：只用傳輸線（USB 網路共用）連電腦，不走 Wi-Fi，也不在 Wi-Fi 上廣播找電腦。 */
     public volatile boolean usbOnly;
+
+    public static final String ACTION_INSTALL = "io.github.benjaminwz.pocketdrop.INSTALL_STATUS";
+    /** 電腦帶著的手機 App 版本（電腦從 GitHub 更新後就會變新）；比自己新就能按「更新 App」。 */
+    public volatile int pcApk;
+    public volatile String pcVersion = "";
+    public volatile boolean updating;
+    public volatile String updateError;
+    private long myCode;
     private volatile String manualHost;
     private volatile Pc chosen;
     private final Object wake = new Object();
@@ -133,6 +144,11 @@ public class Hub {
         pcId = prefs.getString("pc_id", "");
         pcName = prefs.getString("pc_name", T("電腦", "PC"));
         usbOnly = prefs.getBoolean("usb_only", false);
+        try {
+            myCode = app.getPackageManager().getPackageInfo(app.getPackageName(), 0).getLongVersionCode();
+        } catch (Exception e) {
+            myCode = Long.MAX_VALUE;  // 查不到自己的版本就不要提示更新
+        }
         Thread t = new Thread(this::loop, "pocketdrop-net");
         t.setDaemon(true);
         t.start();
@@ -461,6 +477,7 @@ public class Hub {
     /** 記住電腦的所有位址（電腦在打招呼和 ping 的回應裡會附上）。 */
     private void learnAddrs(JSONObject j) {
         learnTunnel(j);
+        learnApk(j);
         JSONArray a = j.optJSONArray("addrs");
         if (a == null) return;
         StringBuilder b = new StringBuilder();
@@ -469,6 +486,60 @@ public class Hub {
             b.append(a.optString(i));
         }
         prefs.edit().putString("addrs", b.toString()).apply();
+    }
+
+    private void learnApk(JSONObject j) {
+        int apk = j.optInt("apk", 0);
+        String v = j.optString("version", "");
+        if (apk != pcApk || !v.equals(pcVersion)) {
+            pcApk = apk;
+            pcVersion = v;
+            changed();
+        }
+    }
+
+    public boolean updateAvailable() {
+        return state == CONNECTED && pcApk > myCode;
+    }
+
+    /** 從電腦下載新版 App，交給系統安裝（系統會跳出「要更新嗎」讓使用者按）。結果會送回 MainActivity。 */
+    public void startUpdate() {
+        if (updating) return;
+        updating = true;
+        updateError = null;
+        changed();
+        new Thread(() -> {
+            HttpURLConnection c = null;
+            PackageInstaller.Session s = null;
+            try {
+                c = open(host, port, "/PocketDrop.apk", null);
+                c.setReadTimeout(60000);
+                if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
+                long size = c.getContentLengthLong();
+                PackageInstaller pi = app.getPackageManager().getPackageInstaller();
+                PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+                params.setAppPackageName(app.getPackageName());
+                s = pi.openSession(pi.createSession(params));
+                try (InputStream in = c.getInputStream(); OutputStream out = s.openWrite("update.apk", 0, size)) {
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    s.fsync(out);
+                }
+                Intent done = new Intent(app, MainActivity.class).setAction(ACTION_INSTALL);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
+                s.commit(PendingIntent.getActivity(app, 7, done, flags).getIntentSender());
+                s.close();
+                s = null;
+            } catch (Exception e) {
+                updateError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                if (s != null) s.abandon();
+            } finally {
+                if (c != null) c.disconnect();
+                updating = false;
+                changed();
+            }
+        }).start();
     }
 
     /** 電腦開了遠端模式時會告訴我們網址（電腦每次重開都會變，所以每次連上都更新）。 */
@@ -693,6 +764,7 @@ public class Hub {
             JSONObject resp = new JSONObject(readAll(c.getInputStream()));
             items = resp.getJSONArray("items");
             learnTunnel(resp);
+            learnApk(resp);
         } finally {
             c.disconnect();
         }

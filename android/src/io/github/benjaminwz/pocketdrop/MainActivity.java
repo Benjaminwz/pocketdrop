@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.pm.PackageInstaller;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -54,6 +55,9 @@ public class MainActivity extends Activity implements Hub.Listener {
     private TextView status;
     private LinearLayout actions, list;
     private EditText input;
+    private LinearLayout updateCard;
+    private TextView updateText;
+    private Button updateBtn;
     private int shownState = -1;
     private List<Hub.Pc> choiceShown;
     private boolean keepOn;
@@ -73,14 +77,14 @@ public class MainActivity extends Activity implements Hub.Listener {
         hub = Hub.get(this);
         getWindow().setStatusBarColor(NAVY);
         setContentView(buildUi());
-        if (saved == null) handleShare(getIntent());
+        if (saved == null && !handleInstallStatus(getIntent())) handleShare(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        handleShare(intent);
+        if (!handleInstallStatus(intent)) handleShare(intent);
     }
 
     @Override
@@ -101,6 +105,37 @@ public class MainActivity extends Activity implements Hub.Listener {
     @Override
     public void onHubChanged() {
         render();
+    }
+
+    /** 系統安裝更新的結果：要使用者確認的話，打開系統的「要更新嗎」畫面。 */
+    private boolean handleInstallStatus(Intent in) {
+        if (in == null || !Hub.ACTION_INSTALL.equals(in.getAction())) return false;
+        int status = in.getIntExtra(PackageInstaller.EXTRA_STATUS, -999);
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = in.getParcelableExtra(Intent.EXTRA_INTENT);
+            try {
+                if (confirm != null) startActivity(confirm);
+            } catch (Exception e) {
+                toast(T("打不開系統的安裝畫面", "Couldn't open the system installer"));
+            }
+        } else if (status != PackageInstaller.STATUS_SUCCESS) {
+            String msg = in.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+            toast(T("更新沒有完成", "The update didn't finish") + (msg != null ? T("：", ": ") + msg : ""));
+        }
+        setIntent(new Intent(this, MainActivity.class));
+        return true;
+    }
+
+    private void onUpdateClick() {
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            toast(T("請允許口袋快傳「安裝不明應用程式」，再回來按一次「更新 App」", "Allow PocketDrop to install apps, then come back and tap Update again"));
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+            } catch (Exception ignored) {
+            }
+            return;
+        }
+        hub.startUpdate();
     }
 
     /** 從別的 App 按「分享 → 口袋快傳」進來。 */
@@ -215,6 +250,15 @@ public class MainActivity extends Activity implements Hub.Listener {
         actions.setPadding(0, dp(12), 0, 0);
         head.addView(actions);
 
+        updateCard = card(root, T("有新版", "Update available"));
+        updateText = label("", 14, TEXT, false);
+        updateCard.addView(updateText);
+        updateBtn = button(T("更新 App", "Update app"), true, v -> onUpdateClick());
+        LinearLayout.LayoutParams ub = new LinearLayout.LayoutParams(-1, dp(48));
+        ub.topMargin = dp(10);
+        updateCard.addView(updateBtn, ub);
+        updateCard.setVisibility(View.GONE);
+
         LinearLayout send = card(root, T("傳到電腦", "Send to PC"));
         LinearLayout row = horizontal();
         send.addView(row);
@@ -296,6 +340,16 @@ public class MainActivity extends Activity implements Hub.Listener {
             actions.setVisibility(actions.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         }
         if (s == Hub.CHOOSE && hub.choices != choiceShown) showChoose();
+        boolean showUpdate = hub.updating || hub.updateAvailable() || hub.updateError != null;
+        updateCard.setVisibility(showUpdate ? View.VISIBLE : View.GONE);
+        if (showUpdate) {
+            updateText.setText(hub.updating ? T("正在從電腦下載新版…", "Downloading the new version from the PC…")
+                    : hub.updateError != null ? T("更新沒有成功：", "The update failed: ") + hub.updateError
+                    : T("電腦上有新版的口袋快傳（v", "PocketDrop v") + hub.pcVersion
+                      + T("），按下面的按鈕就能更新。", " is on your PC. Tap below to update."));
+            updateBtn.setEnabled(!hub.updating);
+            updateBtn.setAlpha(hub.updating ? 0.5f : 1f);
+        }
         renderList();
 
         boolean busy = false;

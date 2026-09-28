@@ -7,6 +7,8 @@
 約定很單純：手機用 UDP 廣播 "POCKETDROP?" 找電腦，之後全部走 HTTP（見 Handler）。
 第一次連線時電腦會問要不要允許那支手機，允許後發一把鑰匙（key）給它，之後每個請求都要帶。
 """
+import base64
+import hashlib
 import http.server
 import ipaddress
 import json
@@ -24,6 +26,7 @@ import time
 import tkinter as tk
 import urllib.parse
 import urllib.request
+import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 IS_WINDOWS = sys.platform == "win32"
@@ -72,7 +75,8 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
+UPDATE_REPO = "Benjaminwz/pocketdrop"  # 到這個 GitHub 專案檢查新版；空字串 = 不檢查
 HTTP_PORT = int(os.environ.get("POCKETDROP_PORT", "47850"))  # 改埠號只給測試用，手機 App 固定連 47850
 UDP_PORT = 47852
 # 測試用：設成 127.0.0.1 就只聽本機，不會跳防火牆
@@ -371,6 +375,68 @@ class Config:
             os.replace(tmp, self.path)
 
 
+# ---------------------------------------------------------------- 更新
+
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v))[:3]) or (0,)
+
+
+def apk_code(version=APP_VERSION):
+    """Android App 的版本號：1.5.0 → 10500（build_release.ps1 用一樣的算法）。"""
+    a = (list(version_tuple(version)) + [0, 0, 0])[:3]
+    return a[0] * 10000 + a[1] * 100 + a[2]
+
+
+def fetch_latest_release():
+    """問 GitHub 最新版；比現在新就回傳 release 資料，沒有或查不到回傳 None。"""
+    if not UPDATE_REPO:
+        return None
+    req = urllib.request.Request(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                                 headers={"User-Agent": "PocketDrop", "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = json.load(r)
+    return data if version_tuple(data.get("tag_name", "")) > version_tuple(APP_VERSION) else None
+
+
+def install_kind():
+    """source = 用原始碼跑；installer = 用安裝檔裝的（旁邊有 unins000.exe）；portable = 免安裝版 exe。"""
+    if not FROZEN or not IS_WINDOWS:
+        return "source"
+    return "installer" if os.path.exists(os.path.join(BASE_DIR, "unins000.exe")) else "portable"
+
+
+def download_asset(asset, dest, progress):
+    """從 GitHub 下載新版檔案；GitHub 有提供 SHA-256 的話會核對，對不上就不用。"""
+    req = urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": "PocketDrop"})
+    h, done, total = hashlib.sha256(), 0, asset.get("size", 0)
+    with urllib.request.urlopen(req, timeout=60) as r, open(dest + ".part", "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            h.update(chunk)
+            done += len(chunk)
+            progress(done, total)
+    digest = asset.get("digest") or ""
+    if digest.startswith("sha256:") and digest[7:].lower() != h.hexdigest():
+        os.remove(dest + ".part")
+        raise ValueError(T("下載的檔案驗證失敗", "The download failed verification"))
+    os.replace(dest + ".part", dest)
+
+
+def swap_exe_command(new, old):
+    """免安裝版更新：等口袋快傳關掉，用新的 exe 蓋掉舊的，再打開。用 PowerShell 跑（中文路徑也不會出錯）。"""
+    q = lambda s: "'" + s.replace("'", "''") + "'"
+    script = (f"$new = {q(new)}; $old = {q(old)}\n"
+              "for ($i = 0; $i -lt 60; $i++) {\n"
+              "  Start-Sleep -Milliseconds 500\n"
+              "  try { Move-Item -LiteralPath $new -Destination $old -Force -ErrorAction Stop; Start-Process -FilePath $old; exit } catch {}\n"
+              "}\n")
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+    return ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded]
+
+
 # ---------------------------------------------------------------- 遠端模式
 
 CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
@@ -528,6 +594,11 @@ class Hub:
         if self.via_remote.get(did):
             return name + T("（遠端）", " (remote)")
         return name + (T("（USB 線）", " (USB)") if self.via_usb.get(did) else "")
+
+    def info(self):
+        """放在 ping / hello / poll 回應裡：電腦的位址、遠端網址、版本（手機據此知道能不能更新）。"""
+        return {"addrs": pc_addresses(), "tunnel": self.tunnel_url(), "version": APP_VERSION,
+                "apk": apk_code() if os.path.exists(APK_PATH) else 0}
 
     def tunnel_url(self):
         return self.tunnel.url if self.tunnel else None
@@ -790,7 +861,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.deny(401, "not paired")
             if self.route == "/api/ping":
                 return self.reply(200, {"ok": True, "name": self.hub.pc_name, "id": self.hub.cfg.data["pc_id"],
-                                        "addrs": pc_addresses(), "tunnel": self.hub.tunnel_url()})
+                                        **self.hub.info()})
             if self.route == "/api/poll":
                 try:
                     wait = max(0.0, min(float(self.q.get("wait", "25")), 30.0))
@@ -802,7 +873,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     after = 0
                 items = self.hub.wait_items(wait, after, did)
                 self.hub.touch(did)
-                return self.reply(200, {"items": items, "tunnel": self.hub.tunnel_url()})
+                return self.reply(200, {"items": items, **self.hub.info()})
             if self.route == "/api/file":
                 return self.send_item_file(did)
             self.deny(404, "not found")
@@ -936,7 +1007,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.hub.cfg.save()
         self.hub.touch(did)
         self.reply(200, {"ok": True, "key": dev["key"], "name": self.hub.pc_name, "id": self.hub.cfg.data["pc_id"],
-                         "addrs": pc_addresses(), "tunnel": self.hub.tunnel_url()})
+                         **self.hub.info()})
 
     def upload_part(self, did, uid):
         """分段上傳：遠端模式經過 Cloudflare，一次最多只能傳 100 MB，所以大檔案切成好幾段接起來。
@@ -1139,6 +1210,12 @@ class App:
                 pass
         texts = tk.Frame(inner, bg=HEAD_BG)
         texts.pack(side="left", fill="x", expand=True)
+        self.head_texts = texts
+        self.update_btn = tk.Label(inner, text="", bg="#ffc069", fg=HEAD_BG, font=(FONT, 10, "bold"),
+                                   padx=px(12), pady=px(6), cursor="hand2")
+        self.update_btn.bind("<Button-1>", lambda e: self.start_update())
+        self.new_release = None
+        self.updating = False
         tk.Label(texts, text=APP_NAME, bg=HEAD_BG, fg="#ffffff", font=(FONT, 16, "bold")).pack(anchor="w")
         self.status = tk.Label(texts, text="", bg=HEAD_BG, fg=HEAD_TEXT, font=(FONT, 10), anchor="w", justify="left")
         self.status.pack(anchor="w", fill="x")
@@ -1221,6 +1298,9 @@ class App:
         self.cancel_link = tk.Label(bottom3, text="", bg=BG, fg=ACCENT, font=(FONT, 9, "underline"), cursor="hand2")
         self.cancel_link.bind("<Button-1>", lambda e: self.cancel_queue())
         unpair.pack(side="right")
+        version = tk.Label(bottom3, text=f"v{APP_VERSION}", bg=BG, fg=MUTED, font=(FONT, 9, "underline"), cursor="hand2")
+        version.pack(side="right", padx=(0, px(12)))
+        version.bind("<Button-1>", lambda e: self.check_update(manual=True))
         unpair.bind("<Button-1>", lambda e: self.manage_pairs())
 
         if self.dnd_ok:
@@ -1314,6 +1394,17 @@ class App:
         elif kind == "local_send":
             self.show_window()
             self.queue_paths(event[1])
+        elif kind == "update_found":
+            self.on_update_found(event[1], event[2])
+        elif kind == "update_progress":
+            done, total = event[1], event[2]
+            self.update_btn.configure(text=T("下載中 ", "Downloading ") + (f"{done * 100 // total}%" if total else fmt_size(done)))
+        elif kind == "update_failed":
+            self.updating = False
+            self.update_btn.configure(text=T("更新", "Update"))
+            self.log_line("✗", T(f"更新失敗：{event[1]}", f"Update failed: {event[1]}"), "bad")
+        elif kind == "update_ready":
+            self.install_update(event[1], event[2])
         elif kind == "tunnel":
             self.on_tunnel(event[1])
         elif kind == "wizard":
@@ -1487,6 +1578,87 @@ class App:
         if len(folder) > 48:
             folder = "…" + folder[-47:]
         self.recv_label.configure(text=T(f"手機傳來的檔案存在：{folder}", f"Files from the phone go to: {folder}"))
+
+    # ---- 更新
+    def check_update(self, manual=False):
+        def run():
+            try:
+                rel = fetch_latest_release()
+            except Exception:
+                rel = None
+            self.hub.emit("update_found", rel, manual)
+        threading.Thread(target=run, daemon=True).start()
+
+    def auto_check_update(self):
+        self.check_update()
+        self.root.after(6 * 3600 * 1000, self.auto_check_update)  # 開著的話每 6 小時再問一次
+
+    def on_update_found(self, rel, manual):
+        if not rel:
+            if manual:
+                messagebox.showinfo(APP_NAME, T(f"已經是最新版（v{APP_VERSION}）。", f"You're on the latest version (v{APP_VERSION})."), parent=self.root)
+            return
+        first = self.new_release is None
+        self.new_release = rel
+        tag = rel.get("tag_name", "")
+        self.update_btn.configure(text=T(f"有新版 {tag}，更新", f"Update to {tag}"))
+        if not self.update_btn.winfo_ismapped():
+            self.update_btn.pack(side="right", before=self.head_texts)
+        if first:
+            self.log_line("", T(f"有新版 {tag}，按右上角的按鈕就能更新（手機 App 之後也會跟著提示更新）",
+                                f"{tag} is available. Click the button at the top right to update (phones will be offered the update after that)"), "warn")
+        if manual:
+            self.start_update()
+
+    def start_update(self):
+        rel = self.new_release
+        if not rel or self.updating:
+            return
+        kind, tag = install_kind(), rel.get("tag_name", "")
+        pattern = r"^PocketDrop-Setup-.*\.exe$" if kind == "installer" else r"^PocketDrop\.exe$"
+        asset = next((a for a in rel.get("assets", []) if re.search(pattern, a.get("name", ""))), None)
+        if kind == "source" or not asset:
+            webbrowser.open(rel.get("html_url", f"https://github.com/{UPDATE_REPO}/releases/latest"))
+            return
+        notes = (rel.get("body") or "").strip()
+        notes = notes[:600] + ("…" if len(notes) > 600 else "")
+        if not messagebox.askyesno(APP_NAME, T(f"要更新到 {tag} 嗎？（約 {fmt_size(asset.get('size', 0))}）\n裝好後會自動重新打開口袋快傳。\n\n{notes}",
+                                               f"Update to {tag}? (about {fmt_size(asset.get('size', 0))})\nPocketDrop reopens by itself when it's done.\n\n{notes}"),
+                                   parent=self.root):
+            return
+        self.updating = True
+        self.update_btn.configure(text=T("下載中…", "Downloading…"))
+
+        def run():
+            import tempfile
+            folder = os.path.join(tempfile.gettempdir(), "PocketDrop")
+            os.makedirs(folder, exist_ok=True)
+            dest = os.path.join(folder, asset["name"])
+            try:
+                download_asset(asset, dest, lambda d, t: self.hub.emit("update_progress", d, t))
+            except Exception as e:
+                return self.hub.emit("update_failed", str(e))
+            self.hub.emit("update_ready", kind, dest)
+        threading.Thread(target=run, daemon=True).start()
+
+    def install_update(self, kind, path):
+        if kind == "installer":
+            # 安裝檔要系統管理員權限，Windows 會跳出確認；/SILENT 只顯示進度，裝完會自動重新打開口袋快傳
+            ok = ctypes.windll.shell32.ShellExecuteW(None, "open", path, "/SILENT /SUPPRESSMSGBOXES /NORESTART", None, 1) > 32
+        else:
+            try:
+                subprocess.Popen(swap_exe_command(path, sys.executable), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                ok = True
+            except OSError:
+                ok = False
+        if not ok:
+            self.updating = False
+            self.update_btn.configure(text=T("更新", "Update"))
+            self.log_line("✗", T("沒有開始更新（可能是 Windows 的確認視窗被取消了）", "The update didn't start (the Windows prompt may have been cancelled)"), "bad")
+            return
+        self.hub.tunnel.stop()
+        self.root.destroy()
+        os._exit(0)
 
     def save_remote(self):
         on = bool(self.remote.get())
@@ -1841,6 +2013,7 @@ def main():
         root = tk.Tk()
     hub.tunnel = Tunnel(hub)
     app = App(root, hub, dnd_ok)
+    root.after(3000, app.auto_check_update)
     if cfg.data.get("remote") and not cfg.data.get("usb_only"):
         hub.tunnel.start()
     if not cfg.data["devices"] and not cfg.data.get("welcomed"):

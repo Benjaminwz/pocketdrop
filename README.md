@@ -20,6 +20,7 @@ Android 和 iPhone 都能用，不用註冊任何帳號。Android App 只有 <b>
 - **iPhone 不用裝 App：** 掃電腦上的 QR code，直接在 Safari 裡用；「加入主畫面」後就跟 App 一樣
 - **連接手機精靈：** 第一次打開會一步步帶你連手機；Android 接上傳輸線（選「檔案傳輸」）後，電腦會自動把 App 安裝檔放進手機
 - **Windows 安裝精靈：** 一般的「下一步」安裝，會建好捷徑和右鍵「傳送到」，也會替防火牆開好私人與公用網路
+- **一鍵更新：** GitHub 有新版時，電腦版右上角會出現「更新」按鈕，按一下自動下載安裝（會核對校驗碼）；電腦更新後，手機 App 會跟著出現「更新 App」按鈕，iPhone 網頁版會自動換成新版
 - **中英文介面：** 跟著系統語言自動切換
 - **超輕量：** Android App 是純 Java，沒有任何第三方函式庫
 
@@ -89,10 +90,10 @@ python pc/pocketdrop.pyw
 **全部打包**（Windows）：先準備好下面 Android 的工具、`pip install pyinstaller`，以及 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.4.0 -VersionCode 4
+powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.5.0
 ```
 
-這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.4.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣。
+這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.5.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.5.0 → 10500）。
 
 **只做 Android App：** 不需要 Android Studio 或 Gradle，只要 JDK 17 和 Android SDK 命令列工具：
 
@@ -114,6 +115,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **USB 自動配對：** 手機開 USB 網路共用後，電腦會多一張 RNDIS / NCM 網卡。電腦發現連線是從這張網卡進來的，代表手機實體接在這台電腦上，就直接配對。網卡名稱比對刻意很嚴格，USB 轉乙太網路的網卡不會被誤認。
 - **純有線模式：** 電腦在收到連線的第一時間（還沒回任何東西）就把非 USB 的連線關掉，UDP 搜尋也不回應。手機只在 USB 網卡上廣播。
 - **遠端模式：** 電腦版執行 `cloudflared tunnel --url`，把拿到的網址放在 `/api/ping`、`/api/poll` 的回應裡，手機記住後，在外面找不到電腦時就改連它。Cloudflare 每次上傳最多 100 MB，所以上傳一律切成 32 MB 一段（`uid` + `offset`）。從通道進來的連線不能用本機專用的功能。
+- **更新：** 電腦版問 GitHub 的 `releases/latest`，下載對應的檔案並核對 GitHub 提供的 SHA-256。安裝版用新的安裝檔靜默安裝（`/SILENT`）；免安裝版等程式關掉後換掉 exe。手機 App 從 `/api/ping`、`/api/poll` 的 `apk` 欄位知道電腦帶著哪一版，比自己新就從電腦下載，交給系統的 PackageInstaller 安裝。
 - **網頁版：** 電腦版在 `/web` 提供同一套功能的網頁，走一樣的 API。
 - **QR code 配對：** QR code 網址裡帶一個 10 分鐘有效的配對碼，帶著它來打招呼的手機直接配對。
 - **手機存檔：** 用 MediaStore 存到「下載」資料夾，不需要任何儲存權限。
@@ -137,6 +139,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **Setup wizards:**
   - The Windows installer creates the shortcuts and the "Send to" entry, and opens the firewall for private and public networks.
   - A phone wizard walks you through connecting. For Android, it copies the APK onto the phone over the USB cable (File transfer mode); you just tap Install on the phone.
+- **One-click updates:** when a new release is on GitHub, the PC app shows an Update button that downloads it, verifies the SHA-256, and installs it. After that, the phone app offers "Update app" (the new APK comes from the PC), and the iPhone web page reloads itself.
 - The UI switches between English and Chinese to match your system language.
 
 **Download** from [Releases](../../releases):

@@ -96,6 +96,7 @@ let key = store.get("pd_key");
 let pcName = store.get("pd_pc") || T("電腦", "PC");
 let code = new URLSearchParams(location.search).get("code") || "";  // 掃電腦上的 QR code 帶來的配對碼
 let lastId = 0;
+let pageVersion = "";  // 電腦更新後版本會變，這時自動重新整理成新版網頁
 let waitingUser = false, wakeFn = null;
 const nap = ms => new Promise(r => { wakeFn = r; setTimeout(r, ms); });
 
@@ -142,6 +143,10 @@ async function loop() {
       if (!r.ok) throw new Error("HTTP " + r.status);
       setStatus(T("● 已連上：", "● Connected: ") + pcName, "on");
       const j = await r.json();
+      if (j.version) {
+        if (!pageVersion) pageVersion = j.version;
+        else if (j.version !== pageVersion && !busy) { location.reload(); return; }
+      }
       for (const it of j.items) { lastId = Math.max(lastId, it.id); receive(it); }
     } catch (e) {
       setStatus(T("連不上電腦，重試中…（電腦要開著口袋快傳、連同一個 Wi-Fi）",
