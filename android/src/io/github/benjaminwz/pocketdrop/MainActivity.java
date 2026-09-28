@@ -78,14 +78,14 @@ public class MainActivity extends Activity implements Hub.Listener {
         hub = Hub.get(this);
         getWindow().setStatusBarColor(NAVY);
         setContentView(buildUi());
-        if (saved == null && !handleInstallStatus(getIntent())) handleShare(getIntent());
+        if (saved == null && !handleInstallStatus(getIntent()) && !handleLink(getIntent())) handleShare(getIntent());
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (!handleInstallStatus(intent)) handleShare(intent);
+        if (!handleInstallStatus(intent) && !handleLink(intent)) handleShare(intent);
     }
 
     @Override
@@ -123,6 +123,15 @@ public class MainActivity extends Activity implements Hub.Listener {
             String msg = in.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
             toast(T("更新沒有完成", "The update didn't finish") + (msg != null ? T("：", ": ") + msg : ""));
         }
+        setIntent(new Intent(this, MainActivity.class));
+        return true;
+    }
+
+    /** 網頁上點「用 App 打開」（pocketdrop://pair?host=…&rv=…&code=…）：交給 Hub 去配對。 */
+    private boolean handleLink(Intent in) {
+        Uri d = in == null ? null : in.getData();
+        if (d == null || !Intent.ACTION_VIEW.equals(in.getAction()) || !"pocketdrop".equals(d.getScheme())) return false;
+        hub.pairFromLink(d.getQueryParameter("host"), d.getQueryParameter("rv"), d.getQueryParameter("code"));
         setIntent(new Intent(this, MainActivity.class));
         return true;
     }

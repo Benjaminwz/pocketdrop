@@ -141,6 +141,9 @@ public class Hub {
     private long myCode;
     private volatile String manualHost;
     private volatile Pc chosen;
+    /** 從網頁點「用 App 打開」帶來的配對資料：{家裡的位址, 遠端登記頻道, 配對碼}。 */
+    private volatile String[] pendingLink;
+    private volatile HttpURLConnection pollConn;
     private final Object wake = new Object();
     private final Object connLock = new Object();
     private int started;
@@ -187,6 +190,25 @@ public class Hub {
     public void activityStopped() {
         if (started > 0) started--;
         if (started == 0) active = false;
+    }
+
+    /** 從網頁（萬用 QR code、區網的下載頁）點「用 App 打開」：先試家裡的區網，連不到就查遠端網址，用配對碼配對（不用按允許）。 */
+    public void pairFromLink(String lanHost, String rv, String code) {
+        pendingLink = new String[]{lanHost, rv, code};
+        setState(SEARCHING, T("配對中…", "Pairing…"));
+        abortPoll();
+        kick();
+    }
+
+    /** 正在等電腦回應的長輪詢（最多 25 秒）直接中斷，好讓新的連線設定馬上生效。 */
+    private void abortPoll() {
+        HttpURLConnection c = pollConn;
+        if (c != null) c.disconnect();
+    }
+
+    /** 手機現在有沒有區網（Wi-Fi、熱點、USB 網路共用）。只有行動網路時沒有，就不用去試家裡的位址。 */
+    private static boolean hasLan() {
+        return broadcastTargets(false).size() > 1;  // 第一個固定是 255.255.255.255，其餘是各個區網的廣播位址
     }
 
     public void retry() {
@@ -315,8 +337,10 @@ public class Hub {
                     setState(SEARCHING, T("純有線模式：改用傳輸線連線…", "Cable-only mode: switching to the USB cable…"));
                 } else {
                     // 插了線、開了 USB 網路共用，但還在走 Wi-Fi：試著改走傳輸線；在切過去之前問得勤一點
+                    // 走遠端的時候回到家（有 Wi-Fi 了）：改回區網直連，比較快也不用經過 Cloudflare
                     boolean usbWaiting = !isUsbHost(host) && !usbAddresses().isEmpty();
-                    if (usbWaiting) trySwitchToUsb();
+                    boolean lanWaiting = isRemoteHost(host) && hasLan();
+                    if (usbWaiting || lanWaiting) trySwitchLocal(usbWaiting);
                     poll(usbWaiting && !isUsbHost(host) ? 5 : 25);
                 }
             } catch (Unauthorized e) {
@@ -336,6 +360,29 @@ public class Hub {
         chosen = null;
         boolean retryNow = userRetry;
         userRetry = false;
+        String[] link = pendingLink;
+        pendingLink = null;
+
+        if (link != null) {
+            if (link[1] != null && !link[1].isEmpty()) prefs.edit().putString("rv", link[1]).apply();
+            if (link[0] != null && !link[0].isEmpty()) {  // 在家：區網連得到就直接配對
+                Pc p = parseHost(link[0]);
+                if (p != null && (!usbOnly || isUsbHost(p.host)) && ping(p.host, p.port, 1500) != -1) {
+                    pair(p, link[2]);
+                    return;
+                }
+            }
+            String tn = usbOnly ? "" : lookupTunnel();  // 在外面：查電腦現在的遠端網址
+            if (!tn.isEmpty()) {
+                Pc p = new Pc();
+                p.host = tn;
+                pair(p, link[2]);
+                return;
+            }
+            setState(NOT_FOUND, T("找不到電腦：請確認電腦開著口袋快傳（在外面要勾「遠端模式」）",
+                    "Can't find the PC: make sure PocketDrop is open (with Remote mode on when you're away)"));
+            return;
+        }
 
         if (manual != null) {
             Pc p = parseHost(manual);
@@ -343,11 +390,11 @@ public class Hub {
                 setState(NOT_FOUND, T("IP 格式不對，例如 192.168.1.23", "That IP doesn't look right, e.g. 192.168.1.23"));
                 return;
             }
-            pair(p);
+            pair(p, null);
             return;
         }
         if (pick != null) {
-            pair(pick);
+            pair(pick, null);
             return;
         }
         // 被拒絕或要選電腦的時候，等使用者按按鈕，不要一直煩電腦
@@ -357,8 +404,11 @@ public class Hub {
         }
         if (state != NOT_FOUND) setState(SEARCHING, T("正在尋找電腦…", "Looking for your PC…"));
 
-        // 1. 上次那台電腦還在原本的 IP（手機開著 USB 網路共用時跳過，直接去找走傳輸線的路）
-        if (key != null && host != null && (usbAddresses().isEmpty() || isUsbHost(host)) && (!usbOnly || isUsbHost(host))) {
+        // 1. 上次那台電腦還在原本的 IP（手機開著 USB 網路共用時跳過，直接去找走傳輸線的路；
+        //    只有行動網路時，家裡的位址不用試）
+        boolean lan = hasLan();
+        if (key != null && host != null && (usbAddresses().isEmpty() || isUsbHost(host)) && (!usbOnly || isUsbHost(host))
+                && (lan || isRemoteHost(host))) {
             int code = ping(host, port);
             if (code == 200) {
                 setConnected();
@@ -367,7 +417,7 @@ public class Hub {
             if (code == 401) throw new Unauthorized();
         }
         // 2. 在 Wi-Fi 裡喊一聲，看哪台電腦開著口袋快傳
-        List<Pc> found = discover();
+        List<Pc> found = lan ? discover() : new ArrayList<>();
         if (usbOnly) found.removeIf(p -> !p.usb);
         String usbHint = T("純有線模式：請用傳輸線接上電腦，並開啟「USB 網路共用」", "Cable-only mode: plug into the PC with a USB cable and turn on USB tethering");
         if (key != null) {
@@ -383,7 +433,7 @@ public class Hub {
                 }
             }
             // 3. 不在同一個網路（例如在外面）：試電腦告訴過我們的其他位址，例如 Tailscale
-            if (!usbOnly && tryRemote()) return;
+            if (!usbOnly && tryRemote(lan)) return;
             // 配對過的電腦沒開：不自動去連別台，等它開
             setState(NOT_FOUND, usbOnly ? usbHint : T("找不到電腦「", "Can't find \"") + pcName
                     + T("」。請確認電腦開著口袋快傳、跟手機連同一個 Wi-Fi（在外面的話兩邊都要開 Tailscale）。",
@@ -393,7 +443,7 @@ public class Hub {
         }
         for (Pc p : found) {
             if (p.usb) {
-                pair(p);
+                pair(p, null);
                 return;
             }
         }
@@ -403,20 +453,21 @@ public class Hub {
             return;
         }
         if (found.size() == 1) {
-            pair(found.get(0));
+            pair(found.get(0), null);
             return;
         }
         choices = found;
         setState(CHOOSE, T("找到好幾台電腦，請選一台", "Found several PCs. Pick one"));
     }
 
-    /** 跟電腦打招呼；第一次連的手機，電腦那邊要按「允許」。 */
-    private void pair(Pc p) {
-        if (p.usb) setState(WAIT_APPROVE, T("透過 USB 線連線中…", "Connecting over USB…"));
+    /** 跟電腦打招呼；第一次連的手機，電腦那邊要按「允許」。帶著 QR code 的配對碼（code）的話直接配對。 */
+    private void pair(Pc p, String pairCode) {
+        if (pairCode != null) setState(WAIT_APPROVE, T("配對中…", "Pairing…"));
+        else if (p.usb) setState(WAIT_APPROVE, T("透過 USB 線連線中…", "Connecting over USB…"));
         else setState(WAIT_APPROVE, T("請到電腦", "Click \"Allow\" on the PC") + (p.name.equals(T("電腦", "PC")) ? "" : T("「", " (") + p.name + T("」", ")")) + T("上按「允許」", ""));
         HttpURLConnection c = null;
         try {
-            c = open(p.host, p.port, "/api/hello", null);
+            c = open(p.host, p.port, "/api/hello" + (pairCode != null ? "?code=" + URLEncoder.encode(pairCode, "UTF-8") : ""), null);
             c.setRequestMethod("POST");
             c.setReadTimeout(130000);
             c.setRequestProperty("X-Device-Id", deviceId());
@@ -468,13 +519,13 @@ public class Hub {
 
     /** 在家裡的網路找不到電腦時，試電腦告訴過我們的其他位址：Tailscale 的 100.x.x.x，
      *  最後試電腦「遠端模式」的網址（https://….trycloudflare.com，在外面也連得到）。 */
-    private boolean tryRemote() throws Unauthorized {
+    private boolean tryRemote(boolean lan) throws Unauthorized {
         List<String> candidates = new ArrayList<>();
         Collections.addAll(candidates, prefs.getString("addrs", "").split(","));
         candidates.add(prefs.getString("tunnel", ""));
         for (String a : candidates) {
             a = a.trim();
-            if (a.isEmpty() || a.equals(host)) continue;
+            if (a.isEmpty() || a.equals(host) || (!lan && !isRemoteHost(a))) continue;  // 沒有區網：只試 Tailscale 和遠端網址
             int code = ping(a, port, a.startsWith("https://") ? 8000 : 3000);
             if (code == 200) {
                 Pc p = new Pc();
@@ -825,13 +876,14 @@ public class Hub {
     /** 問電腦有沒有東西要給手機；沒有的話電腦會等最多 25 秒，一有新東西就馬上回。 */
     private long lastUsbTry;
 
-    /** 已經用 Wi-Fi 連著，手機又開了 USB 網路共用：同一台電腦如果從傳輸線那邊也找得到，就改走線（最多每 5 秒試一次）。 */
-    private void trySwitchToUsb() {
+    /** 換到比較好的路：手機開了 USB 網路共用就改走傳輸線（最多每 5 秒試一次）；
+     *  走遠端時回到家有了區網，就改回區網直連（最多每 30 秒試一次）。 */
+    private void trySwitchLocal(boolean usbWanted) {
         long now = System.currentTimeMillis();
-        if (now - lastUsbTry < 5000) return;
+        if (now - lastUsbTry < (usbWanted ? 5000 : 30000)) return;
         lastUsbTry = now;
         for (Pc p : discover()) {
-            if (p.usb && p.id.equals(pcId) && ping(p.host, p.port) == 200) {
+            if ((p.usb || !usbWanted) && p.id.equals(pcId) && ping(p.host, p.port) == 200) {
                 saveHost(p);
                 setConnected();
                 return;
@@ -842,6 +894,7 @@ public class Hub {
     private void poll(int wait) throws Exception {
         HttpURLConnection c = open(host, port, "/api/poll?wait=" + wait, key);
         c.setReadTimeout(40000);
+        pollConn = c;
         JSONArray items;
         try {
             int code = c.getResponseCode();
@@ -853,6 +906,7 @@ public class Hub {
             learnApk(resp);
             learnPhones(resp);
         } finally {
+            pollConn = null;
             c.disconnect();
         }
         for (int i = 0; i < items.length(); i++) handleItem(items.getJSONObject(i));

@@ -101,6 +101,17 @@ if (location.hash.startsWith("#pd=")) {
   history.replaceState(null, "", "/web");
 }
 const LAUNCHER = "https://benjaminwz.github.io/pocketdrop/go/";
+const onTunnel = location.hostname.endsWith(".trycloudflare.com");
+// 走遠端（經過 Cloudflare）時，在家可以改走區網直連，比較快
+function showDirect(lan) {
+  if (!onTunnel || $("direct") || !/^http:\/\/[0-9.]+:\d+$/.test(lan)) return;
+  const a = document.createElement("a");
+  a.id = "direct";
+  a.textContent = T("在家嗎？改用區網直連（比較快）", "At home? Switch to a direct connection (faster)");
+  a.href = lan + "/web#pd=" + encodeURIComponent(JSON.stringify({ id: devId, key: key, pc: pcName }));
+  a.style.cssText = "display:block;margin-top:8px;color:#3558d4";
+  $("foot").appendChild(a);
+}
 let failures = 0;
 let devId = store.get("pd_id");
 if (!devId) { devId = "web-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); store.set("pd_id", devId); }
@@ -163,10 +174,17 @@ async function loop() {
         else if (j.version !== pageVersion && !busy) { location.reload(); return; }
       }
       if (j.phones) showPhones(j.phones);
+      if (j.rv) store.set("pd_rv", j.rv);
+      if (j.lan) showDirect(j.lan);
       for (const it of j.items) { lastId = Math.max(lastId, it.id); receive(it); }
     } catch (e) {
-      // 遠端網址失效了（電腦重開會換網址）：回固定入口頁找新網址
-      if (++failures >= 3 && location.hostname.endsWith(".trycloudflare.com") && !busy) { location.href = LAUNCHER; return; }
+      // 連不上了：遠端網址失效（電腦重開會換網址），或人離開家裡的 Wi-Fi。
+      // 電腦有開遠端模式的話，回固定入口頁，它會找到現在能用的路
+      const rv = store.get("pd_rv");
+      if (++failures >= 5 && !busy && (onTunnel || rv)) {
+        location.href = LAUNCHER + (rv ? "#" + new URLSearchParams({ rv: rv, name: pcName }).toString() : "");
+        return;
+      }
       setStatus(T("連不上電腦，重試中…（電腦要開著口袋快傳、連同一個 Wi-Fi）",
         "Can't reach the PC, retrying… (PocketDrop must be open on the PC, same Wi-Fi)"), "warn");
       await nap(3000);

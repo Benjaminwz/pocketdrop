@@ -75,7 +75,10 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
+# Android App 的網址開頭和套件名稱：網頁上的「用 App 打開」靠這兩個叫出 App
+APP_SCHEME = "pocketdrop"
+APP_PACKAGE = "io.github.benjaminwz.pocketdrop"
 UPDATE_REPO = "Benjaminwz/pocketdrop"  # 到這個 GitHub 專案檢查新版；空字串 = 不檢查
 # iPhone 的固定入口（GitHub Pages）：遠端網址每次都會變，iPhone 把這頁加到主畫面，它會去找電腦現在的網址
 LAUNCHER_URL = "https://benjaminwz.github.io/pocketdrop/go/"
@@ -537,27 +540,36 @@ class Tunnel:
                 with opener.open(CLOUDFLARED_URL, timeout=60) as r, open(exe + ".part", "wb") as f:
                     shutil.copyfileobj(r, f, 1 << 20)
                 os.replace(exe + ".part", exe)
-            if not exe or not os.path.exists(exe):
-                return self.set("error", T("找不到 cloudflared（Mac 請先用 Homebrew 安裝：brew install cloudflared）",
-                                           "cloudflared not found (on Mac: brew install cloudflared)"))
+        except Exception as e:
+            return self.set("error", str(e))
+        if not exe or not os.path.exists(exe):
+            return self.set("error", T("找不到 cloudflared（Mac 請先用 Homebrew 安裝：brew install cloudflared）",
+                                       "cloudflared not found (on Mac: brew install cloudflared)"))
+        wait = 5
+        while self.state != "off":  # 通道斷掉（網路斷線、電腦睡眠醒來…）就自己重開，最久每分鐘試一次
+            self.set("starting")
+            started = time.time()
+            try:
+                self.proc = subprocess.Popen([exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{HTTP_PORT}"],
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                for line in self.proc.stdout:
+                    m = re.search(rb"https://[a-z0-9-]+\.trycloudflare\.com", line)
+                    if m and not self.url:
+                        self.url = m.group().decode()
+                        self.set("on")
+                        threading.Thread(target=self.announce, daemon=True).start()
+            except Exception as e:
+                self.error = str(e)
+            self.url = None
             if self.state == "off":
                 return
-            self.set("starting")
-            self.proc = subprocess.Popen([exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{HTTP_PORT}"],
-                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            for line in self.proc.stdout:
-                m = re.search(rb"https://[a-z0-9-]+\.trycloudflare\.com", line)
-                if m and not self.url:
-                    self.url = m.group().decode()
-                    self.set("on")
-                    threading.Thread(target=self.announce, daemon=True).start()
-            if self.state != "off":
-                self.url = None
-                self.set("error", T("遠端通道斷掉了", "The remote tunnel stopped"))
-        except Exception as e:
-            self.url = None
-            self.set("error", str(e))
+            self.set("error", self.error or T("遠端通道斷掉了，等一下會自動重開", "The remote tunnel stopped; it will restart shortly"))
+            wait = 5 if time.time() - started > 300 else min(wait * 2, 60)
+            for _ in range(wait * 2):
+                if self.state == "off":
+                    return
+                time.sleep(0.5)
 
     def announce(self):
         """把現在的遠端網址登記到 ntfy.sh（手機在外面、電腦重開換了網址時，靠這個找到新網址）。
@@ -766,6 +778,7 @@ class Hub:
         """放在 ping / hello / poll 回應裡：電腦的位址、遠端網址、版本（手機據此知道能不能更新）。"""
         return {"addrs": pc_addresses(), "tunnel": self.tunnel_url(), "version": APP_VERSION,
                 "rv": self.cfg.data["rv"] if self.cfg.data.get("remote") else "",
+                "lan": f"http://{lan_ip()}:{HTTP_PORT}",
                 "apk": apk_code() if os.path.exists(APK_PATH) else 0}
 
     def tunnel_url(self):
@@ -897,19 +910,29 @@ PAGE = """<!doctype html><html lang="%LANG%"><head><meta charset="utf-8">
 <style>body{font-family:system-ui,sans-serif;background:#f4f6fc;color:#1f2a3d;margin:0;padding:20px}
 .card{background:#fff;border-radius:18px;padding:26px;max-width:420px;margin:30px auto;box-shadow:0 2px 14px rgba(26,38,86,.08);text-align:center}
 h1{margin:4px 0;color:#1a2656}p{color:#6b7688}
+a.btn.soft{background:#e8eeff;color:#3558d4}
 a.btn{display:block;background:#3558d4;color:#fff;text-decoration:none;padding:16px;border-radius:12px;font-size:18px;font-weight:bold;margin:22px 0}
 ol{text-align:left;line-height:1.9;color:#1f2a3d;padding-left:22px}</style></head>
-<body><div class="card"><h1>%TITLE%</h1><p>%SUB%</p>%BODY%<p><a id="web" href="/web">%WEB%</a></p></div>
-<script>document.getElementById("web").href = "/web" + location.search;</script></body></html>"""
+<body><div class="card"><h1>%TITLE%</h1><p>%SUB%</p>%BODY%<a id="app" class="btn soft" style="display:none">%APP%</a>
+<p><a id="web" href="/web">%WEB%</a></p></div>
+<script>
+document.getElementById("web").href = "/web" + location.search;
+var code = new URLSearchParams(location.search).get("code");
+if (code && /Android/.test(navigator.userAgent)) {
+  var a = document.getElementById("app");
+  a.href = "intent://pair?host=" + encodeURIComponent(location.host) + "&code=" + encodeURIComponent(code) + "#Intent;scheme=%SCHEME%;package=%PKG%;end";
+  a.style.display = "block";
+}
+</script></body></html>"""
 
 PAGE_TEXT = {
-    "zh": {"LANG": "zh-Hant", "TITLE": "口袋快傳", "SUB": "手機跟電腦互傳檔案", "WEB": "不想裝 App？直接用網頁版 →",
+    "zh": {"LANG": "zh-Hant", "TITLE": "口袋快傳", "SUB": "手機跟電腦互傳檔案", "WEB": "不想裝 App？直接用網頁版 →", "APP": "已經裝好 App？點這裡直接配對",
            "OK": """<a class="btn" href="/PocketDrop.apk">下載 Android App</a>
 <ol><li>下載完打開 <b>PocketDrop.apk</b></li>
 <li>手機問要不要允許安裝，選「允許／設定 → 允許這個來源」</li>
 <li>裝好打開口袋快傳，再到電腦上按「允許」就連上了</li></ol>""",
            "MISSING": "<p>電腦上找不到 PocketDrop.apk，請把它放在口袋快傳程式的資料夾裡。</p>"},
-    "en": {"LANG": "en", "TITLE": "PocketDrop", "SUB": "Send files between your phone and PC", "WEB": "Rather not install? Use the web version →",
+    "en": {"LANG": "en", "TITLE": "PocketDrop", "SUB": "Send files between your phone and PC", "WEB": "Rather not install? Use the web version →", "APP": "Already have the app? Tap to pair",
            "OK": """<a class="btn" href="/PocketDrop.apk">Download Android app</a>
 <ol><li>When the download finishes, open <b>PocketDrop.apk</b></li>
 <li>If the phone asks, allow installing apps from this source</li>
@@ -921,8 +944,9 @@ PAGE_TEXT = {
 def download_page(accept_language):
     t = PAGE_TEXT["zh" if "zh" in (accept_language or "").lower() else "en"]
     html = PAGE.replace("%BODY%", t["OK"] if os.path.exists(APK_PATH) else t["MISSING"])
-    for k in ("LANG", "TITLE", "SUB", "WEB"):
+    for k in ("LANG", "TITLE", "SUB", "WEB", "APP"):
         html = html.replace(f"%{k}%", t[k])
+    html = html.replace("%SCHEME%", APP_SCHEME).replace("%PKG%", APP_PACKAGE)
     return html
 
 
@@ -2197,6 +2221,12 @@ class App:
                                                      wraplength=px(430)).pack(anchor="w", pady=(px(6), 0))
         code = self.hub.new_pair_code()
         url = f"http://{self.ip}:{HTTP_PORT}/?code={code}"
+        # 萬用 QR code：開了遠端模式時，改指向固定入口頁，它會自己判斷在家還是在外面、Android 還是 iPhone
+        universal = bool(self.hub.tunnel_url()) and not self.cfg.data.get("usb_only")
+        if universal:
+            url = LAUNCHER_URL + "#" + urllib.parse.urlencode({
+                "rv": self.cfg.data["rv"], "code": code, "name": self.hub.pc_name,
+                "lan": f"http://{self.ip}:{HTTP_PORT}", "scheme": APP_SCHEME, "pkg": APP_PACKAGE})
         if page == "home":
             title(T("連接手機", "Connect a phone"))
             text(T("要連哪一種手機？", "What kind of phone?"))
@@ -2216,10 +2246,14 @@ class App:
             self.wizard_status = tk.Label(box, text=T("◌ 等待手機接上…", "◌ Waiting for the phone…"), bg=ACCENT_SOFT, fg=ACCENT,
                                           font=(FONT, 10, "bold"), justify="left", wraplength=px(430), padx=px(10), pady=px(8))
             self.wizard_status.pack(anchor="w", fill="x", pady=(px(10), 0))
-            tk.Label(box, text=T("方法二：用手機相機掃 QR code 下載", "Option 2: scan the QR code to download"), bg=CARD, fg=ACCENT,
+            tk.Label(box, text=T("方法二：用手機相機掃 QR code", "Option 2: scan the QR code"), bg=CARD, fg=ACCENT,
                      font=(FONT, 11, "bold")).pack(anchor="w", pady=(px(16), 0))
-            text(T("手機要跟電腦連同一個 Wi-Fi。掃了之後按「下載 Android App」。",
-                   "The phone must be on the same Wi-Fi. After scanning, tap \"Download Android app\"."))
+            if universal:
+                text(T("在家、在外面都能掃。掃了之後按「用 App 打開」就會直接配對；還沒裝 App 會先帶你下載。",
+                       "Works at home or away. Tap \"Open in the app\" to pair right away; if the app isn't installed yet, it takes you to the download."))
+            else:
+                text(T("手機要跟電腦連同一個 Wi-Fi。掃了之後按「下載 Android App」；已經裝好的話按「點這裡直接配對」。",
+                       "The phone must be on the same Wi-Fi. Tap \"Download Android app\", or \"Tap to pair\" if it's already installed."))
             self.draw_qr(box, url, px(4))
             self.other_addresses(text)
             text(T("裝好之後打開 App，它會自動找到這台電腦（用傳輸線的話，App 裡按「用 USB 線連」）。",
@@ -2228,21 +2262,22 @@ class App:
             threading.Thread(target=self.wizard_push_loop, daemon=True).start()
         elif page == "iphone":
             title(T("iPhone / iPad：不用裝 App", "iPhone / iPad: no app needed"))
-            text(T("用相機掃這個 QR code，就會在 Safari 打開口袋快傳，而且自動配對。手機要跟電腦連同一個 Wi-Fi。",
-                   "Scan this QR code with the camera. PocketDrop opens in Safari and pairs automatically. The phone must be on the same Wi-Fi."), TEXT)
-            self.draw_qr(box, url, px(6))
-            text(T(f"或在 Safari 輸入：http://{self.ip}:{HTTP_PORT}/", f"or open in Safari: http://{self.ip}:{HTTP_PORT}/"), ACCENT)
-            self.other_addresses(text)
+            if universal:
+                text(T("用相機掃這個 QR code，會打開口袋快傳並自動配對，在家、在外面都能用（電腦重開也沒關係）。",
+                       "Scan this QR code with the camera. PocketDrop opens and pairs automatically, at home or away (even after the PC restarts)."), TEXT)
+            else:
+                text(T("用相機掃這個 QR code，就會在 Safari 打開口袋快傳，而且自動配對。手機要跟電腦連同一個 Wi-Fi。",
+                       "Scan this QR code with the camera. PocketDrop opens in Safari and pairs automatically. The phone must be on the same Wi-Fi."), TEXT)
+            self.draw_qr(box, url, px(4) if universal else px(6))
+            if not universal:
+                text(T(f"或在 Safari 輸入：http://{self.ip}:{HTTP_PORT}/", f"or open in Safari: http://{self.ip}:{HTTP_PORT}/"), ACCENT)
+                self.other_addresses(text)
             text(T("打開後按 Safari 的「分享 → 加入主畫面」，下次從主畫面打開就好。",
                    "Then tap Share → Add to Home Screen in Safari, and open it from there next time."))
-            if self.hub.tunnel_url():
-                tk.Label(box, text=T("在家、在外面都要用（遠端模式）：掃這個", "Use it at home and away (remote mode): scan this"), bg=CARD, fg=ACCENT,
-                         font=(FONT, 11, "bold")).pack(anchor="w", pady=(px(14), 0))
-                frag = urllib.parse.urlencode({"rv": self.cfg.data["rv"], "code": code, "name": self.hub.pc_name})
-                self.draw_qr(box, f"{LAUNCHER_URL}#{frag}", px(3))
-                text(T("會打開口袋快傳的固定入口，把它「加入主畫面」。之後在哪裡打開，它都會自動找到這台電腦（電腦重開也沒關係）。",
-                       "It opens PocketDrop's fixed entry page. Add it to the Home Screen; wherever you open it, it finds this PC (even after the PC restarts)."), MUTED, 9)
-            elif self.ts_ip:
+            if not universal and not self.cfg.data.get("usb_only"):
+                text(T("想在外面也能用？在電腦版下面勾「遠端模式」，這裡就會變成在家、在外面都能掃的 QR code。",
+                       "Want it away from home too? Tick \"Remote mode\" at the bottom of the main window and this QR code works anywhere."), MUTED, 9)
+            if not universal and self.ts_ip:
                 tk.Label(box, text=T("在外面也要用（兩邊都開 Tailscale）", "Use it away from home too (Tailscale on both)"), bg=CARD, fg=ACCENT,
                          font=(FONT, 11, "bold")).pack(anchor="w", pady=(px(14), 0))
                 self.draw_qr(box, f"http://{self.ts_ip}:{HTTP_PORT}/?code={code}", px(3))

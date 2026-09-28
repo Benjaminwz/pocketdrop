@@ -1,6 +1,8 @@
 <!doctype html>
-<!-- 口袋快傳的固定入口（GitHub Pages）。電腦的遠端網址每次都會變，iPhone 把這頁加到主畫面：
-     打開時到 ntfy.sh 查電腦現在的遠端網址，第一次順便用 QR code 帶來的配對碼配對，再帶著鑰匙跳過去。
+<!-- 口袋快傳的固定入口（GitHub Pages）。電腦開了遠端模式時，電腦版的 QR code 都指向這裡（萬用 QR code）：
+     - iPhone：到 ntfy.sh 查電腦現在的遠端網址，第一次用 QR code 帶來的配對碼配對，再帶著鑰匙跳到電腦的網頁版；
+       查不到遠端網址（例如電腦關了遠端模式）就改走家裡的區網位址。把這頁加到主畫面，在哪裡打開都找得到電腦。
+     - Android：按「用 App 打開」，把配對碼交給 App（App 會自己找電腦、配對）；沒裝 App 就帶去下載。
      這頁只在你的手機上執行，鑰匙只存在手機裡，不會傳到 GitHub。 -->
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -14,18 +16,19 @@
 <style>
 body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#1a2656;color:#fff;
   font:16px/1.5 -apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",system-ui,sans-serif;text-align:center}
-.box{padding:28px;max-width:360px}
+.box{padding:28px;max-width:360px;width:100%;box-sizing:border-box}
 img{width:88px;height:88px;border-radius:22px}
 h1{font-size:24px;margin:14px 0 6px}
 #msg{color:#c1cbee;min-height:3em}
-button{margin-top:18px;background:#3558d4;color:#fff;border:0;border-radius:12px;padding:12px 22px;font:inherit;font-weight:700}
+.btn{display:block;margin-top:14px;background:#3558d4;color:#fff;border:0;border-radius:12px;padding:14px;font:inherit;font-weight:700;text-decoration:none}
+.btn.soft{background:rgba(255,255,255,.14)}
 #tip{margin-top:22px;font-size:13px;color:#8793c4}
 </style></head>
 <body><div class="box">
 <img src="../icon.png" alt="">
 <h1 id="title">PocketDrop</h1>
 <div id="msg"></div>
-<button id="retry" hidden></button>
+<div id="buttons"></div>
 <div id="tip"></div>
 </div>
 <script>
@@ -38,29 +41,31 @@ const store = {
   set: (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} },
 };
 document.title = $("title").textContent = T("口袋快傳", "PocketDrop");
-$("retry").textContent = T("再試一次", "Try again");
-$("retry").onclick = () => location.reload();
-const say = (text, retry) => { $("msg").textContent = text; $("retry").hidden = !retry; };
+const say = text => { $("msg").textContent = text; };
+function button(text, action, soft) {
+  const b = document.createElement("a");
+  b.className = "btn" + (soft ? " soft" : "");
+  b.textContent = text;
+  if (typeof action === "string") b.href = action; else { b.href = "#"; b.onclick = e => { e.preventDefault(); action(); }; }
+  $("buttons").appendChild(b);
+}
+const retry = () => button(T("再試一次", "Try again"), () => location.reload());
 
-// 第一次：QR code 在網址 # 後面帶來 rv（電腦的登記頻道）、code（10 分鐘有效的配對碼）、name（電腦名字）
+// 電腦版的 QR code 在網址 # 後面帶來：rv（電腦的登記頻道）、code（10 分鐘有效的配對碼）、name（電腦名字）、
+// lan（家裡區網的位址）、scheme / pkg（Android App 的網址開頭和套件名稱）
 const hash = new URLSearchParams(location.hash.slice(1));
 if (hash.get("rv")) {
   if (hash.get("rv") !== store.get("pd_rv")) store.set("pd_key", "");  // 換了一台電腦：舊鑰匙不能用
-  store.set("pd_rv", hash.get("rv"));
-  store.set("pd_pc", hash.get("name") || "");
+  for (const k of ["rv", "name", "lan", "scheme", "pkg"]) if (hash.get(k)) store.set("pd_" + k, hash.get(k));
 }
 const code = hash.get("code") || "";
 history.replaceState(null, "", location.pathname);  // 清掉網址上的東西，加到主畫面的是乾淨的網址
 
-const standalone = navigator.standalone || matchMedia("(display-mode: standalone)").matches;
-if (/iPhone|iPad|iPod/.test(navigator.userAgent) && !standalone) {
-  $("tip").textContent = T("小技巧：按 Safari 的「分享」→「加入主畫面」，以後從主畫面打開就好。",
-    "Tip: tap Share → Add to Home Screen, and open it from there next time.");
-}
-
+const ua = navigator.userAgent;
+const android = /Android/.test(ua);
 let devId = store.get("pd_id");
 if (!devId) { devId = "web-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); store.set("pd_id", devId); }
-const devName = /iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad|Macintosh/.test(navigator.userAgent) ? "iPad" : T("瀏覽器", "Browser");
+const devName = /iPhone/.test(ua) ? "iPhone" : /iPad|Macintosh/.test(ua) ? "iPad" : android ? T("Android 瀏覽器", "Android browser") : T("瀏覽器", "Browser");
 
 async function tunnelUrl(rv) {
   // 電腦開遠端模式時會把網址登記在這裡；取最後一筆
@@ -70,38 +75,82 @@ async function tunnelUrl(rv) {
   return /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(url) ? url : "";
 }
 
-async function main() {
-  const rv = store.get("pd_rv");
-  if (!rv) return say(T("還沒連過電腦：請在電腦版口袋快傳按「連接手機」→「iPhone」，掃「在家、在外面都要用」那個 QR code。",
-    "Not set up yet: on the PC, click \"Connect a phone\" → iPhone and scan the QR code for home and away."));
-  say(T("正在找你的電腦…", "Looking for your PC…"));
-  let url;
-  try { url = await tunnelUrl(rv); } catch (e) { return say(T("網路好像不通，確認手機有連上網路。", "No internet connection?"), true); }
-  if (!url) return say(T("找不到電腦：請確認電腦開著口袋快傳，而且勾了「遠端模式」。", "Can't find your PC: make sure PocketDrop is open with Remote mode on."), true);
+// 遠端網址還連得到嗎（只看有沒有回應，最多等 6 秒）
+async function reachable(base) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);
+  try { await fetch(base + "/", { mode: "no-cors", cache: "no-store", signal: ctl.signal }); return true; }
+  catch (e) { return false; }
+  finally { clearTimeout(timer); }
+}
 
+// 帶著鑰匙跳到電腦的網頁版（# 後面的東西不會送到網路上）；沒有鑰匙但有配對碼就讓網頁版自己配對
+function openWeb(base, key) {
+  if (key) location.replace(base + "/web#pd=" + encodeURIComponent(JSON.stringify({ id: devId, key: key, pc: store.get("pd_name") })));
+  else location.replace(base + "/web" + (code ? "?code=" + encodeURIComponent(code) : ""));
+}
+
+// Android：把配對碼交給 App（App 會自己找電腦：先找家裡的區網，找不到就查遠端網址）；沒裝 App 就去下載頁
+function androidPage(downloadBase) {
+  const scheme = store.get("pd_scheme") || "pocketdrop", pkg = store.get("pd_pkg") || "io.github.benjaminwz.pocketdrop";
+  const q = new URLSearchParams({ rv: store.get("pd_rv") });
+  if (code) q.set("code", code);
+  if (store.get("pd_lan")) q.set("host", store.get("pd_lan").replace(/^https?:\/\//, ""));
+  let intent = "intent://pair?" + q.toString() + "#Intent;scheme=" + scheme + ";package=" + pkg + ";";
+  if (downloadBase) intent += "S.browser_fallback_url=" + encodeURIComponent(downloadBase + "/") + ";";
+  say(code ? T("按「用 App 打開」就會直接配對。", "Tap \"Open in the app\" to pair.") : T("按「用 App 打開」。", "Tap \"Open in the app\"."));
+  button(T("用 App 打開", "Open in the app"), intent + "end");
+  if (downloadBase) button(T("還沒裝 App：下載", "No app yet: download it"), downloadBase + "/", true);
+  button(T("不裝 App，用網頁版", "Use the web version instead"), () => { $("buttons").textContent = ""; web(); }, true);
+}
+
+async function web() {
+  const rv = store.get("pd_rv"), lan = store.get("pd_lan");
+  say(T("正在找你的電腦…", "Looking for your PC…"));
+  let url = "";
+  try { if (rv) url = await tunnelUrl(rv); } catch (e) { /* 沒網路：下面改走區網 */ }
   let key = store.get("pd_key");
-  try {
-    if (key) {  // 確認鑰匙還能用、電腦也連得到
-      const r = await fetch(url + "/api/ping", { headers: { "X-Key": key } });
-      if (r.status === 401) { key = ""; store.set("pd_key", ""); }
-      else if (!r.ok) throw new Error("HTTP " + r.status);
-    }
-    if (!key) {
-      if (!code) return say(T("這支手機要重新配對：在電腦版按「連接手機」→「iPhone」，再掃一次 QR code。",
-        "This phone needs to pair again: on the PC, click \"Connect a phone\" → iPhone and scan the QR code."));
-      say(T("配對中…", "Pairing…"));
-      const r = await fetch(url + "/api/hello?code=" + encodeURIComponent(code), {
-        method: "POST", headers: { "X-Device-Id": devId, "X-Device-Name": encodeURIComponent(devName) } });
-      if (!r.ok) return say(r.status === 403 ? T("電腦沒有允許（QR code 可能過期了，請重新掃）", "The PC declined (the QR code may have expired; scan again)")
-        : T("配對失敗：", "Pairing failed: ") + r.status, true);
-      const j = await r.json();
-      key = j.key; store.set("pd_key", key); store.set("pd_pc", j.name || store.get("pd_pc"));
-    }
-  } catch (e) {
-    return say(T("連不到電腦（電腦可能剛重開，等一下再試）。", "Can't reach the PC (it may have just restarted; try again shortly)."), true);
+  if (url) {
+    try {
+      if (key) {  // 確認鑰匙還能用、電腦也連得到
+        const r = await fetch(url + "/api/ping", { headers: { "X-Key": key } });
+        if (r.status === 401) { key = ""; store.set("pd_key", ""); }
+        else if (!r.ok) throw new Error("HTTP " + r.status);
+      }
+      if (!key && code) {
+        say(T("配對中…", "Pairing…"));
+        const r = await fetch(url + "/api/hello?code=" + encodeURIComponent(code), {
+          method: "POST", headers: { "X-Device-Id": devId, "X-Device-Name": encodeURIComponent(devName) } });
+        if (r.status === 403) { say(T("電腦沒有允許（QR code 可能過期了，請重新掃）", "The PC declined (the QR code may have expired; scan again)")); return retry(); }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const j = await r.json();
+        key = j.key; store.set("pd_key", key); if (j.name) store.set("pd_name", j.name);
+      }
+      if (key) return openWeb(url, key);
+    } catch (e) { /* 遠端網址過期了（電腦剛重開）：下面改走區網 */ }
   }
-  // 帶著鑰匙跳到電腦的網頁版（# 後面的東西不會送到網路上）
-  location.replace(url + "/web#pd=" + encodeURIComponent(JSON.stringify({ id: devId, key: key, pc: store.get("pd_pc") })));
+  if (lan) return openWeb(lan, key);  // 在家、或電腦沒開遠端模式：走區網
+  say(url ? T("這支手機要重新配對：在電腦版按「連接手機」，再掃一次 QR code。", "This phone needs to pair again: click \"Connect a phone\" on the PC and scan the QR code.")
+    : T("找不到電腦：請確認電腦開著口袋快傳，而且勾了「遠端模式」。", "Can't find your PC: make sure PocketDrop is open with Remote mode on."));
+  retry();
+}
+
+async function main() {
+  if (!store.get("pd_rv") && !store.get("pd_lan"))
+    return say(T("還沒連過電腦：請在電腦版口袋快傳按「連接手機」，用相機掃 QR code。",
+      "Not set up yet: on the PC, click \"Connect a phone\" and scan the QR code with the camera."));
+  if (android) {
+    let base = "";
+    try { if (store.get("pd_rv")) base = await tunnelUrl(store.get("pd_rv")); } catch (e) {}
+    if (base && !await reachable(base)) base = "";  // 登記的遠端網址已經失效：下載改走家裡的區網
+    return androidPage(base || store.get("pd_lan"));
+  }
+  const standalone = navigator.standalone || matchMedia("(display-mode: standalone)").matches;
+  if (/iPhone|iPad|iPod/.test(ua) && !standalone) {
+    $("tip").textContent = T("小技巧：按 Safari 的「分享」→「加入主畫面」，以後從主畫面打開就好，在家、在外面都能用。",
+      "Tip: tap Share → Add to Home Screen, and open it from there next time, at home or away.");
+  }
+  web();
 }
 main();
 </script>
