@@ -41,6 +41,7 @@ textarea{display:block;width:100%;min-height:72px;margin:14px 0 10px;border:1px 
 .row a,.row button{flex:1;text-align:center;text-decoration:none;background:var(--soft);color:var(--accent);border:0;border-radius:10px;padding:9px;font:inherit;font-size:14px;font-weight:700}
 .empty{color:var(--muted);font-size:14px;margin:4px 0}
 .foot{color:var(--muted);text-align:center;font-size:12px;margin-top:14px}
+select.to{display:none;width:100%;margin:0 0 12px;padding:12px;border:0;border-radius:12px;background:var(--soft);color:var(--accent);font:inherit;font-weight:700}
 #tip{display:none;background:#fff7e0;border:1px solid #f3dfa2;color:#7a5b00;border-radius:12px;padding:10px 12px;font-size:13px;margin-top:14px}
 </style></head>
 <body>
@@ -48,6 +49,7 @@ textarea{display:block;width:100%;min-height:72px;margin:14px 0 10px;border:1px 
 <main>
 <div id="tip"></div>
 <section class="card"><h2 id="h-send"></h2>
+<select id="to" class="to"></select>
 <label class="btn primary"><span id="l-files"></span><input id="files" type="file" multiple></label>
 <textarea id="text"></textarea>
 <button id="sendText" class="btn soft"></button>
@@ -65,10 +67,10 @@ const $ = id => document.getElementById(id);
 document.title = APP;
 document.documentElement.lang = ZH ? "zh-Hant" : "en";
 $("title").textContent = APP;
-$("h-send").textContent = T("傳到電腦", "Send to PC");
+$("h-send").textContent = T("傳送", "Send");
 $("l-files").textContent = T("選照片／檔案", "Choose photos / files");
 $("text").placeholder = T("輸入文字或網址…", "Type text or a link…");
-$("sendText").textContent = T("傳文字到電腦", "Send text to PC");
+$("sendText").textContent = T("傳文字", "Send text");
 $("h-log").textContent = T("紀錄", "Activity");
 $("empty").textContent = T("還沒有傳過東西。在電腦版拖檔案進視窗，就會出現在這裡。",
   "Nothing here yet. Drag files into PocketDrop on your PC and they'll show up here.");
@@ -134,11 +136,13 @@ async function hello() {
 }
 
 async function loop() {
+  setStatus(T("連線中…", "Connecting…"));
   for (;;) {
     try {
       if (waitingUser) { await nap(3600000); continue; }
       if (!key && !await hello()) continue;
-      const r = await fetch("/api/poll?wait=25&after=" + lastId, { headers: { "X-Key": key }, cache: "no-store" });
+      // 第一次馬上回（wait=0），連線狀態和「傳給」選單才會立刻出現
+      const r = await fetch("/api/poll?wait=" + (pageVersion ? 25 : 0) + "&after=" + lastId, { headers: { "X-Key": key }, cache: "no-store" });
       if (r.status === 401) { key = ""; store.set("pd_key", ""); continue; }
       if (!r.ok) throw new Error("HTTP " + r.status);
       setStatus(T("● 已連上：", "● Connected: ") + pcName, "on");
@@ -147,6 +151,7 @@ async function loop() {
         if (!pageVersion) pageVersion = j.version;
         else if (j.version !== pageVersion && !busy) { location.reload(); return; }
       }
+      if (j.phones) showPhones(j.phones);
       for (const it of j.items) { lastId = Math.max(lastId, it.id); receive(it); }
     } catch (e) {
       setStatus(T("連不上電腦，重試中…（電腦要開著口袋快傳、連同一個 Wi-Fi）",
@@ -155,6 +160,19 @@ async function loop() {
     }
   }
 }
+
+// ---- 傳給誰：電腦，或同一台電腦配對的其他手機（電腦幫忙轉送）
+function showPhones(phones) {
+  const sel = $("to"), keep = sel.value;
+  sel.textContent = "";
+  const add = (value, label) => { const o = document.createElement("option"); o.value = value; o.textContent = label; sel.appendChild(o); };
+  add("", T("傳給：電腦「", "Send to: PC \"") + pcName + T("」", "\""));
+  for (const ph of phones) add(ph.id, T("傳給：", "Send to: ") + ph.name + (ph.online ? T("（在線）", " (online)") : T("（離線，之後會收到）", " (offline, gets it later)")));
+  sel.value = phones.some(ph => ph.id === keep) ? keep : "";
+  sel.style.display = phones.length ? "block" : "none";
+}
+const toParam = to => to ? "&to=" + encodeURIComponent(to) : "";
+const toName = () => $("to").value ? $("to").selectedOptions[0].textContent.replace(/^[^：:]*[：:]\s*/, "").replace(/（.*|\s\(.*/, "") : null;
 
 // ---- 紀錄
 const list = $("list");
@@ -205,14 +223,14 @@ function copy(text) {
 // ---- 電腦 → 手機（瀏覽器不能自動存檔，要使用者按「下載」）
 function receive(it) {
   if (it.type === "text") {
-    const el = entry("↓ " + T("電腦傳來的文字", "Text from PC"), it.text);
+    const el = entry("↓ " + T("收到的文字", "Text received") + (it.from ? T("（來自 ", " (from ") + it.from + T("）", ")") : ""), it.text);
     sub(el, T("按「複製」就能貼到別的地方", "Tap Copy to paste it elsewhere"));
     button(el, T("複製", "Copy"), () => { copy(it.text); sub(el, T("✓ 已複製", "✓ Copied"), "ok"); });
     fetch("/api/done?id=" + it.id + "&ok=1", { method: "POST", headers: { "X-Key": key } }).catch(() => {});
     return;
   }
   const name = it.name.split("/").pop();
-  const el = entry("↓ " + it.name);
+  const el = entry("↓ " + it.name + (it.from ? T("（來自 ", " (from ") + it.from + T("）", ")") : ""));
   sub(el, fmt(it.size) + " · " + T("按「下載」存到手機", "Tap Download to save it"));
   const url = "/api/file?id=" + it.id + "&k=" + encodeURIComponent(key) + "&done=1";
   const dl = button(el, T("下載", "Download"), null, url);
@@ -231,9 +249,10 @@ const queue = [];
 let busy = false;
 $("files").addEventListener("change", e => {
   for (const f of e.target.files) {
-    const el = entry("↑ " + f.name);
+    const to = $("to").value, who = toName();
+    const el = entry("↑ " + f.name + (to ? " → " + who : ""));
     sub(el, T("等待傳送…", "Waiting…"));
-    queue.push({ file: f, el: el });
+    queue.push({ file: f, el: el, to: to });
   }
   e.target.value = "";
   pump();
@@ -241,12 +260,12 @@ $("files").addEventListener("change", e => {
 async function pump() {
   if (busy) return;
   busy = true;
-  while (queue.length) { const q = queue.shift(); await upload(q.file, q.el); }
+  while (queue.length) { const q = queue.shift(); await upload(q.file, q.el, q.to); }
   busy = false;
 }
 // 分段上傳：遠端模式經過 Cloudflare，一次最多只能傳 100 MB，所以一段 32 MB 接起來
 const CHUNK = 32 * 1024 * 1024;
-function upload(file, el) {
+function upload(file, el, to) {
   return new Promise(resolve => {
     if (!key) { sub(el, T("✗ 還沒連上電腦", "✗ Not connected to the PC"), "bad"); return resolve(); }
     const uid = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -255,7 +274,7 @@ function upload(file, el) {
     const send = offset => {
       const end = Math.min(offset + CHUNK, file.size);
       const x = new XMLHttpRequest();
-      x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size + "&uid=" + uid + "&offset=" + offset);
+      x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size + "&uid=" + uid + "&offset=" + offset + toParam(to));
       x.setRequestHeader("X-Key", key);
       x.setRequestHeader("Content-Type", "application/octet-stream");
       x.upload.onprogress = ev => {
@@ -269,7 +288,8 @@ function upload(file, el) {
         if (x.status !== 200) return fail(T("✗ 失敗：電腦回應 ", "✗ Failed: PC replied ") + x.status);
         if (end < file.size) return send(end);
         bar(el);
-        sub(el, T("✓ 已傳到電腦（", "✓ Sent to PC (") + fmt(file.size) + T("）", ")"), "ok");
+        sub(el, to ? T("✓ 已交給電腦轉送，對方打開後就會收到", "✓ Handed to the PC; delivered when they open it")
+          : T("✓ 已傳到電腦（", "✓ Sent to PC (") + fmt(file.size) + T("）", ")"), "ok");
         resolve();
       };
       x.onerror = () => fail(T("✗ 傳到一半斷掉了", "✗ The connection dropped"));
@@ -283,11 +303,13 @@ function upload(file, el) {
 $("sendText").onclick = async () => {
   const text = $("text").value;
   if (!text.trim()) return;
-  const el = entry("↑ " + T("傳給電腦的文字", "Text sent to PC"), text);
+  const to = $("to").value;
+  const el = entry("↑ " + T("傳出的文字", "Text sent") + (to ? " → " + toName() : ""), text);
   $("text").value = "";
   try {
-    const r = await fetch("/api/text", { method: "POST", headers: { "X-Key": key, "Content-Type": "text/plain; charset=utf-8" }, body: text });
-    sub(el, r.ok ? T("✓ 已傳到電腦", "✓ Sent to PC") : T("✗ 失敗", "✗ Failed"), r.ok ? "ok" : "bad");
+    const r = await fetch("/api/text" + (to ? "?to=" + encodeURIComponent(to) : ""), { method: "POST", headers: { "X-Key": key, "Content-Type": "text/plain; charset=utf-8" }, body: text });
+    sub(el, !r.ok ? T("✗ 失敗", "✗ Failed") : to ? T("✓ 已交給電腦轉送，對方打開後就會收到", "✓ Handed to the PC; delivered when they open it")
+      : T("✓ 已傳到電腦", "✓ Sent to PC"), r.ok ? "ok" : "bad");
   } catch (e) {
     sub(el, T("✗ 傳送失敗，請再試一次", "✗ Couldn't send. Please try again"), "bad");
   }

@@ -77,6 +77,8 @@ public class Hub {
         public volatile String name = "", text, error, mime;
         public volatile long done, total = -1, startedAt;
         public volatile Uri uri;
+        /** 手機對手機（透過電腦轉送）：傳給誰／誰傳來的。null = 就是跟電腦傳。 */
+        public volatile String peer;
 
         Entry(int kind) { this.kind = kind; }
     }
@@ -89,6 +91,12 @@ public class Hub {
     }
 
     public interface Listener { void onHubChanged(); }
+
+    /** 同一台電腦配對的其他手機（可以透過電腦轉送給它們）。 */
+    public static class Phone {
+        public String id, name;
+        public boolean online;
+    }
 
     /** 電腦說這支手機的鑰匙不對（被取消配對了）。 */
     static class Unauthorized extends Exception {}
@@ -120,6 +128,9 @@ public class Hub {
     private volatile boolean active, userRetry;
     /** 純有線模式：只用傳輸線（USB 網路共用）連電腦，不走 Wi-Fi，也不在 Wi-Fi 上廣播找電腦。 */
     public volatile boolean usbOnly;
+    public volatile List<Phone> phones = new ArrayList<>();
+    /** 要傳給誰：null = 電腦；否則是另一支手機的 id（電腦幫忙轉送）。 */
+    public volatile String sendTo, sendToName;
 
     public static final String ACTION_INSTALL = "io.github.benjaminwz.pocketdrop.INSTALL_STATUS";
     /** 電腦帶著的手機 App 版本（電腦從 GitHub 更新後就會變新）；比自己新就能按「更新 App」。 */
@@ -215,8 +226,10 @@ public class Hub {
 
     public void sendUris(List<Uri> uris) {
         ContentResolver cr = app.getContentResolver();
+        final String to = sendTo;
         for (final Uri uri : uris) {
             final Entry e = new Entry(Entry.UP);
+            e.peer = to == null ? null : sendToName;
             e.name = "";
             try (Cursor cur = cr.query(uri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE}, null, null, null)) {
                 if (cur != null && cur.moveToFirst()) {
@@ -232,13 +245,15 @@ public class Hub {
                 e.name = last != null ? last : T("檔案", "file");
             }
             addEntry(e);
-            sender.execute(() -> upload(uri, e));
+            sender.execute(() -> upload(uri, e, to));
         }
     }
 
     public void sendText(final String text) {
+        final String to = sendTo;
         final Entry e = new Entry(Entry.TEXT_OUT);
         e.text = text;
+        e.peer = to == null ? null : sendToName;
         addEntry(e);
         sender.execute(() -> {
             if (!waitConnected(60000)) {
@@ -248,7 +263,7 @@ public class Hub {
             HttpURLConnection c = null;
             try {
                 byte[] data = text.getBytes("UTF-8");
-                c = open(host, port, "/api/text", key);
+                c = open(host, port, "/api/text?" + toParam(to).replaceFirst("^&", ""), key);
                 c.setRequestMethod("POST");
                 c.setDoOutput(true);
                 c.setFixedLengthStreamingMode(data.length);
@@ -478,6 +493,7 @@ public class Hub {
     private void learnAddrs(JSONObject j) {
         learnTunnel(j);
         learnApk(j);
+        learnPhones(j);
         JSONArray a = j.optJSONArray("addrs");
         if (a == null) return;
         StringBuilder b = new StringBuilder();
@@ -486,6 +502,36 @@ public class Hub {
             b.append(a.optString(i));
         }
         prefs.edit().putString("addrs", b.toString()).apply();
+    }
+
+    private void learnPhones(JSONObject j) {
+        JSONArray a = j.optJSONArray("phones");
+        if (a == null) return;
+        List<Phone> list = new ArrayList<>();
+        boolean keep = false;
+        for (int i = 0; i < a.length(); i++) {
+            JSONObject o = a.optJSONObject(i);
+            if (o == null) continue;
+            Phone p = new Phone();
+            p.id = o.optString("id");
+            p.name = o.optString("name", T("手機", "Phone"));
+            p.online = o.optBoolean("online");
+            list.add(p);
+            if (p.id.equals(sendTo)) keep = true;
+        }
+        phones = list;
+        if (!keep) setSendTo(null, null);  // 選的那支手機被取消配對了：改回傳給電腦
+        changed();
+    }
+
+    public void setSendTo(String id, String name) {
+        sendTo = id;
+        sendToName = name;
+        changed();
+    }
+
+    private static String toParam(String to) throws IOException {
+        return to == null ? "" : "&to=" + URLEncoder.encode(to, "UTF-8");
     }
 
     private void learnApk(JSONObject j) {
@@ -765,6 +811,7 @@ public class Hub {
             items = resp.getJSONArray("items");
             learnTunnel(resp);
             learnApk(resp);
+            learnPhones(resp);
         } finally {
             c.disconnect();
         }
@@ -778,6 +825,7 @@ public class Hub {
                 String text = it.optString("text");
                 Entry e = new Entry(Entry.TEXT_IN);
                 e.text = text;
+                e.peer = it.has("from") ? it.optString("from") : null;
                 e.state = Entry.OK;
                 addEntry(e);
                 copyToClipboard(text);
@@ -796,6 +844,7 @@ public class Hub {
         if (e == null) {
             e = new Entry(Entry.DOWN);
             e.name = it.optString("name", T("檔案", "file"));
+            e.peer = it.has("from") ? it.optString("from") : null;
             e.total = it.optLong("size", -1);
             incoming.put(id, e);
             addEntry(e);
@@ -913,7 +962,7 @@ public class Hub {
 
     // ------------------------------------------------------------ 手機 → 電腦
 
-    private void upload(Uri uri, Entry e) {
+    private void upload(Uri uri, Entry e, String to) {
         for (int attempt = 0; attempt < 2; attempt++) {
             if (!waitConnected(60000)) {
                 fail(e, T("沒有連上電腦", "Not connected to a PC"));
@@ -922,7 +971,7 @@ public class Hub {
             HttpURLConnection c = null;
             try {
                 if (e.total > 0 && host.startsWith("https://")) {
-                    int code = uploadChunks(uri, e);
+                    int code = uploadChunks(uri, e, to);
                     if (code == 200) {
                         e.state = Entry.OK;
                         changed();
@@ -939,7 +988,7 @@ public class Hub {
                 }
                 // 第二次改用不指定大小的方式傳，以免手機回報的檔案大小不準
                 long size = attempt == 0 ? e.total : -1;
-                c = open(host, port, "/api/upload?name=" + URLEncoder.encode(e.name, "UTF-8") + "&size=" + size, key);
+                c = open(host, port, "/api/upload?name=" + URLEncoder.encode(e.name, "UTF-8") + "&size=" + size + toParam(to), key);
                 c.setRequestMethod("POST");
                 c.setDoOutput(true);
                 c.setReadTimeout(120000);
@@ -986,7 +1035,7 @@ public class Hub {
     private static final int CHUNK = 32 * 1024 * 1024;
 
     /** 遠端模式經過 Cloudflare，一次最多只能傳 100 MB：切成 32 MB 一段一段傳，電腦那邊接起來。回傳最後的 HTTP 狀態碼。 */
-    private int uploadChunks(Uri uri, Entry e) throws IOException {
+    private int uploadChunks(Uri uri, Entry e, String to) throws IOException {
         String uid = UUID.randomUUID().toString();
         String name = URLEncoder.encode(e.name, "UTF-8");
         e.state = Entry.RUNNING;
@@ -1000,7 +1049,7 @@ public class Hub {
             long offset = 0;
             do {
                 long len = Math.min(CHUNK, e.total - offset);
-                HttpURLConnection c = open(host, port, "/api/upload?name=" + name + "&size=" + e.total + "&uid=" + uid + "&offset=" + offset, key);
+                HttpURLConnection c = open(host, port, "/api/upload?name=" + name + "&size=" + e.total + "&uid=" + uid + "&offset=" + offset + toParam(to), key);
                 try {
                     c.setRequestMethod("POST");
                     c.setDoOutput(true);

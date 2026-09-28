@@ -56,6 +56,7 @@ public class MainActivity extends Activity implements Hub.Listener {
     private LinearLayout actions, list;
     private EditText input;
     private LinearLayout updateCard;
+    private TextView sendTo;
     private TextView updateText;
     private Button updateBtn;
     private int shownState = -1;
@@ -259,7 +260,15 @@ public class MainActivity extends Activity implements Hub.Listener {
         updateCard.addView(updateBtn, ub);
         updateCard.setVisibility(View.GONE);
 
-        LinearLayout send = card(root, T("傳到電腦", "Send to PC"));
+        LinearLayout send = card(root, T("傳送", "Send"));
+        // 傳給誰：電腦，或同一台電腦配對的其他手機（電腦幫忙轉送）；沒有其他手機時不顯示
+        sendTo = label("", 15, ACCENT, true);
+        sendTo.setPadding(dp(12), dp(10), dp(12), dp(10));
+        sendTo.setBackground(ripple(round(ACCENT_SOFT, 12, 0), 0x223558D4));
+        sendTo.setOnClickListener(v -> chooseTarget());
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, -2);
+        tp.bottomMargin = dp(12);
+        send.addView(sendTo, tp);
         LinearLayout row = horizontal();
         send.addView(row);
         LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, dp(62), 1);
@@ -282,7 +291,7 @@ public class MainActivity extends Activity implements Hub.Listener {
         send.addView(input, ip);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, dp(48));
         bp.topMargin = dp(10);
-        send.addView(button(T("傳文字到電腦", "Send text to PC"), false, v -> {
+        send.addView(button(T("傳文字", "Send text"), false, v -> {
             String t = input.getText().toString();
             if (t.trim().isEmpty()) {
                 toast(T("先輸入要傳的文字", "Type something first"));
@@ -340,6 +349,8 @@ public class MainActivity extends Activity implements Hub.Listener {
             actions.setVisibility(actions.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         }
         if (s == Hub.CHOOSE && hub.choices != choiceShown) showChoose();
+        sendTo.setVisibility(hub.phones.isEmpty() ? View.GONE : View.VISIBLE);
+        sendTo.setText(T("傳給：", "Send to: ") + (hub.sendTo == null ? T("電腦「", "PC \"") + hub.pcName() + T("」", "\"") : hub.sendToName) + "  ▾");
         boolean showUpdate = hub.updating || hub.updateAvailable() || hub.updateError != null;
         updateCard.setVisibility(showUpdate ? View.VISIBLE : View.GONE);
         if (showUpdate) {
@@ -420,7 +431,8 @@ public class MainActivity extends Activity implements Hub.Listener {
         boolean up = e.kind == Hub.Entry.UP || e.kind == Hub.Entry.TEXT_OUT;
         boolean isText = e.kind == Hub.Entry.TEXT_IN || e.kind == Hub.Entry.TEXT_OUT;
         String arrow = up ? "↑ " : "↓ ";
-        r.title.setText(arrow + (isText ? (up ? T("傳給電腦的文字", "Text sent to PC") : T("電腦傳來的文字", "Text from PC")) : e.name));
+        String who = e.peer == null ? "" : up ? " → " + e.peer : T("（來自 ", " (from ") + e.peer + T("）", ")");
+        r.title.setText(arrow + (isText ? (up ? T("傳出的文字", "Text sent") : T("收到的文字", "Text received")) : e.name) + who);
         r.body.setVisibility(isText ? View.VISIBLE : View.GONE);
         if (isText) r.body.setText(e.text);
 
@@ -453,6 +465,7 @@ public class MainActivity extends Activity implements Hub.Listener {
                 color = GREEN;
                 if (e.kind == Hub.Entry.DOWN) sub = T("✓ 已存到 下載/PocketDrop（", "✓ Saved to Download/PocketDrop (") + size(e.total) + T("）・點一下打開", ") · tap to open");
                 else if (e.kind == Hub.Entry.TEXT_IN) sub = T("✓ 已複製・點一下再複製", "✓ Copied · tap to copy again");
+                else if (e.peer != null) sub = T("✓ 已交給電腦轉送，對方打開 App 就會收到", "✓ Handed to the PC; delivered when they open the app");
                 else sub = T("✓ 已傳到電腦", "✓ Sent to PC") + (isText ? "" : T("（", " (") + size(e.total) + T("）", ")"));
                 break;
             default:
@@ -535,6 +548,24 @@ public class MainActivity extends Activity implements Hub.Listener {
         } catch (Exception e) {
             toast(T("請到「設定 → 網路 → 熱點與網路共用」開啟 USB 網路共用", "Turn on USB tethering in Settings → Network → Hotspot & tethering"));
         }
+    }
+
+    /** 選要傳給誰：電腦，或其他手機（透過電腦轉送，對方打開 App 就會收到）。 */
+    private void chooseTarget() {
+        final List<Hub.Phone> list = hub.phones;
+        String[] names = new String[list.size() + 1];
+        names[0] = T("電腦「", "PC \"") + hub.pcName() + T("」", "\"");
+        for (int i = 0; i < list.size(); i++) {
+            names[i + 1] = list.get(i).name + (list.get(i).online ? T("（在線）", " (online)") : T("（離線，打開 App 後會收到）", " (offline, gets it later)"));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(T("要傳給誰？", "Send to whom?"))
+                .setItems(names, (d, w) -> {
+                    if (w == 0) hub.setSendTo(null, null);
+                    else hub.setSendTo(list.get(w - 1).id, list.get(w - 1).name);
+                })
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .show();
     }
 
     private void confirmSwitch() {

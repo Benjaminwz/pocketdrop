@@ -75,7 +75,7 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 UPDATE_REPO = "Benjaminwz/pocketdrop"  # 到這個 GitHub 專案檢查新版；空字串 = 不檢查
 HTTP_PORT = int(os.environ.get("POCKETDROP_PORT", "47850"))  # 改埠號只給測試用，手機 App 固定連 47850
 UDP_PORT = 47852
@@ -363,7 +363,8 @@ class Config:
             "usb_only": data.get("usb_only", False),  # 純有線模式
             "remote": data.get("remote", False),  # 遠端模式（Cloudflare 臨時通道）
             "welcomed": data.get("welcomed", False),  # 第一次打開的連接精靈跳過了沒
-            "devices": data.get("devices") or {},  # 手機 id -> {"name", "key"}
+            "devices": data.get("devices") or {},  # 手機（或其他電腦）id -> {"name", "key", "pc"}
+            "peers": data.get("peers") or {},  # 其他電腦的 pc_id -> {"name", "host", "port", "key", "addrs", "tunnel"}
         }
         self.save()
 
@@ -373,6 +374,59 @@ class Config:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self.path)
+
+
+# ---------------------------------------------------------------- 電腦對電腦
+
+PEER_CHUNK = 8 * 1024 * 1024  # 傳給別台電腦時一段 8 MB（經過遠端通道也不會超過 100 MB 的限制）
+_direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 區網連線不要走系統代理
+
+
+def peer_json(url, key, data=None, timeout=10, headers=None):
+    h = {"X-Key": key} if key else {}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET", headers=h)
+    with _direct.open(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8") or "{}")
+
+
+def peer_bases(peer):
+    """連另一台電腦時依序試：上次成功的位址 → 對方其他位址 → 對方的遠端網址。"""
+    port, out = peer.get("port", HTTP_PORT), []
+    for h in [peer.get("host")] + list(peer.get("addrs") or []):
+        if h and f"http://{h}:{port}" not in out:
+            out.append(f"http://{h}:{port}")
+    if peer.get("tunnel"):
+        out.append(peer["tunnel"])
+    return out
+
+
+def discover_pcs(own_id, extra=()):
+    """在區網裡喊一聲，找開著口袋快傳的其他電腦（跟手機找電腦的方式一樣）。"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.settimeout(0.3)
+    targets = {"255.255.255.255", *extra}
+    targets |= {ip.rsplit(".", 1)[0] + ".255" for ip in pc_addresses() if ipaddress.ip_address(ip) not in TAILSCALE_NET}
+    found, end, rounds = {}, time.time() + 1.5, 0
+    while time.time() < end:
+        if rounds < 3:
+            for tgt in targets:
+                try:
+                    s.sendto(b"POCKETDROP?", (tgt, UDP_PORT))
+                except OSError:
+                    pass
+            rounds += 1
+        try:
+            data, addr = s.recvfrom(2048)
+            j = json.loads(data.decode("utf-8"))
+            if j.get("app") == "pocketdrop" and j.get("id") and j["id"] != own_id:
+                found.setdefault(j["id"], {"id": j["id"], "name": j.get("name", "PC"), "host": addr[0],
+                                           "port": j.get("port", HTTP_PORT)})
+        except (socket.timeout, ValueError, OSError):
+            pass
+    s.close()
+    return list(found.values())
 
 
 # ---------------------------------------------------------------- 更新
@@ -526,6 +580,7 @@ class Hub:
         self.last_ip = {}  # 手機 id -> 最後一次從哪個 IP 來
         self.via_usb = {}  # 手機 id -> 是不是走 USB 線
         self.via_remote = {}  # 手機 id -> 是不是從遠端通道進來
+        self.peer_online = {}  # 其他電腦的 id -> 上次試的時候連不連得到
         self.tunnel = None  # 遠端模式（啟動時設定）
         self.uploads = {}  # 分段上傳中的檔案：上傳 id -> 狀態
         self.upload_lock = threading.Lock()
@@ -561,10 +616,10 @@ class Hub:
             self.last_ip[did] = ip
             self.via_usb[did] = is_usb_peer(ip)
 
-    def ask_pair(self, name):
+    def ask_pair(self, name, pc=False):
         answer = {"ok": False}
         done = threading.Event()
-        self.emit("pair", name, answer, done)
+        self.emit("pair", name, answer, done, pc)
         done.wait(120)
         return answer["ok"]
 
@@ -578,16 +633,105 @@ class Hub:
         return bool(code and pc and time.time() < pc[1]
                     and secrets.compare_digest(code.encode("utf-8", "replace"), pc[0].encode()))
 
-    def add_device(self, did, name):
+    def add_device(self, did, name, pc=False):
         with self.cfg.lock:
-            self.cfg.data["devices"][did] = {"name": name, "key": secrets.token_urlsafe(24)}
+            self.cfg.data["devices"][did] = {"name": name, "key": secrets.token_urlsafe(24), **({"pc": True} if pc else {})}
         self.cfg.save()
         return self.cfg.data["devices"][did]
 
     def online_ids(self):
         now = time.time()
         devs = self.cfg.data["devices"]
-        return [d for d, t in list(self.seen.items()) if now - t < ONLINE_SECONDS and d in devs]
+        return [d for d, t in list(self.seen.items()) if now - t < ONLINE_SECONDS and d in devs and not devs[d].get("pc")]
+
+    def phone_ids(self):
+        devs = self.cfg.data["devices"]
+        return [d for d in list(devs) if not devs[d].get("pc")]
+
+    def phone_list(self, exclude):
+        """給手機看的「可以傳給哪些手機」（透過這台電腦轉送）。"""
+        online = set(self.online_ids())
+        return [{"id": d, "name": self.cfg.data["devices"][d].get("name", "Phone"), "online": d in online}
+                for d in self.phone_ids() if d != exclude]
+
+    # ---- 其他電腦
+    def save_peer(self, pid, name, info, host=None):
+        """記住另一台電腦：位址、遠端網址，以及我們傳東西過去要用的鑰匙。"""
+        if not pid or not info.get("key"):
+            return
+        with self.cfg.lock:
+            peer = self.cfg.data["peers"].setdefault(pid, {})
+            peer.update(name=name, key=info["key"], port=int(info.get("port") or HTTP_PORT),
+                        addrs=[a for a in info.get("addrs") or [] if isinstance(a, str)][:8],
+                        tunnel=info.get("tunnel") or "")
+            if host:
+                peer["host"] = host
+            peer.setdefault("host", (peer["addrs"] or [""])[0])
+        self.cfg.save()
+
+    def peer_base(self, pid):
+        """找一個連得到對方電腦的位址（先 ping 一下），順便更新對方的位址和名字。連不到回傳 None。"""
+        peer = self.cfg.data["peers"].get(pid)
+        if not peer:
+            return None
+        for base in peer_bases(peer):
+            try:
+                info = peer_json(base + "/api/ping", peer["key"], timeout=8 if base.startswith("https") else 3)
+            except Exception:
+                continue
+            peer["name"] = info.get("name", peer.get("name"))
+            peer["addrs"] = [a for a in info.get("addrs") or [] if isinstance(a, str)][:8] or peer.get("addrs", [])
+            peer["tunnel"] = info.get("tunnel") or ""
+            if base.startswith("http://"):
+                peer["host"] = urllib.parse.urlsplit(base).hostname
+            self.peer_online[pid] = True
+            return base
+        self.peer_online[pid] = False
+        return None
+
+    def pair_pc(self, host, port=HTTP_PORT):
+        """跟另一台電腦配對（對方要按「允許」）。同時把「對方傳東西過來要用的鑰匙」交給它，一次就能互傳。"""
+        pc_id = self.cfg.data["pc_id"]
+        my_key = secrets.token_urlsafe(24)
+        body = json.dumps({"peer": {"id": pc_id, "key": my_key, "port": HTTP_PORT, **self.info()}}).encode("utf-8")
+        base = host.rstrip("/") if host.startswith("https://") else f"http://{host}:{port}"
+        resp = peer_json(base + "/api/hello", None, data=body, timeout=130,
+                         headers={"X-Device-Id": "pc-" + pc_id, "X-Device-Name": urllib.parse.quote(self.pc_name),
+                                  "Content-Type": "application/json"})
+        pid, name = resp["id"], resp.get("name", "PC")
+        with self.cfg.lock:
+            self.cfg.data["devices"]["pc-" + pid] = {"name": name, "key": my_key, "pc": True}
+        self.save_peer(pid, name, {"key": resp["key"], "port": port, "addrs": resp.get("addrs"), "tunnel": resp.get("tunnel")},
+                       None if host.startswith("https://") else host)
+        self.peer_online[pid] = True
+        return name
+
+    def push_file(self, pid, path, rel, progress):
+        """把檔案傳到另一台電腦（對方直接存進它的接收資料夾），分段傳。"""
+        base = self.peer_base(pid)
+        if not base:
+            raise ConnectionError(T("連不到對方的電腦", "Can't reach that PC"))
+        key, size, uid = self.cfg.data["peers"][pid]["key"], os.path.getsize(path), secrets.token_hex(8)
+        rel = rel.replace("\\", "/")
+        sent = 0
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(PEER_CHUNK)
+                q = urllib.parse.urlencode({"name": os.path.basename(rel), "dir": os.path.dirname(rel), "size": size,
+                                            "uid": uid, "offset": sent})
+                peer_json(base + "/api/upload?" + q, key, data=chunk, timeout=180,
+                          headers={"Content-Type": "application/octet-stream"})
+                sent += len(chunk)
+                progress(sent, size)
+                if sent >= size:
+                    return
+
+    def push_text(self, pid, text):
+        base = self.peer_base(pid)
+        if not base:
+            raise ConnectionError(T("連不到對方的電腦", "Can't reach that PC"))
+        peer_json(base + "/api/text", self.cfg.data["peers"][pid]["key"], data=text.encode("utf-8"),
+                  headers={"Content-Type": "text/plain; charset=utf-8"})
 
     def device_label(self, did):
         name = self.cfg.data["devices"].get(did, {}).get("name", T("手機", "Phone"))
@@ -620,7 +764,7 @@ class Hub:
     # ---- 電腦 → 手機的排隊
     # 每一項都記著 targets（要給哪幾支手機；None = 還沒配對任何手機，第一支連上的拿走）
     # 和 got（哪幾支已經收過），全部收到才從排隊裡拿掉。這樣一份檔案可以同時傳給好幾支手機。
-    def add_files(self, files, targets=None):
+    def add_files(self, files, targets=None, relay_from=None):
         added = []
         with self.cond:
             for path, name in files:
@@ -630,16 +774,20 @@ class Hub:
                     continue
                 item = {"id": self.next_id, "type": "file", "name": name.replace("\\", "/"), "size": size, "path": path,
                         "targets": set(targets) if targets else None, "got": set()}
+                if relay_from:  # 手機傳給另一支手機、由這台電腦轉送的：送完就把暫存檔刪掉
+                    item.update(relay=True, **{"from": relay_from})
                 self.next_id += 1
                 self.outbox.append(item)
                 added.append(item)
             self.cond.notify_all()
         return added
 
-    def add_text(self, text, targets=None):
+    def add_text(self, text, targets=None, relay_from=None):
         with self.cond:
             item = {"id": self.next_id, "type": "text", "text": text,
                     "targets": set(targets) if targets else None, "got": set()}
+            if relay_from:
+                item["from"] = relay_from
             self.next_id += 1
             self.outbox.append(item)
             self.cond.notify_all()
@@ -658,7 +806,7 @@ class Hub:
                 items = [it for it in self.outbox if it["id"] > after and self._wanted(it, did)]
                 left = deadline - time.time()
                 if items or left <= 0:
-                    return [{k: v for k, v in it.items() if k in ("id", "type", "name", "size", "text")}
+                    return [{k: v for k, v in it.items() if k in ("id", "type", "name", "size", "text", "from")}
                             for it in items[:50]]
                 self.cond.wait(left)
 
@@ -675,7 +823,13 @@ class Hub:
             item["got"].add(did)
             if item["targets"] is None or item["targets"] <= item["got"]:
                 self.outbox.remove(item)
+                self.drop_relay(item)
         self.emit("delivered", item, ok, did)
+
+    @staticmethod
+    def drop_relay(item):
+        if item.get("relay"):
+            shutil.rmtree(os.path.dirname(item["path"]), ignore_errors=True)
 
     def pending_count(self):
         with self.cond:
@@ -684,13 +838,23 @@ class Hub:
     def clear_outbox(self):
         with self.cond:
             n = len(self.outbox)
+            for item in self.outbox:
+                self.drop_relay(item)
             self.outbox.clear()
         return n
 
     # ---- 手機 → 電腦
-    def reserve(self, name):
-        """在接收資料夾找一個不會撞名的檔名，先建立 .part 占位（同名檔案同時傳也不會互蓋）。"""
-        folder = self.cfg.data["recv_dir"]
+    def reserve(self, name, subdir="", relay=False):
+        """在接收資料夾找一個不會撞名的檔名，先建立 .part 占位（同名檔案同時傳也不會互蓋）。
+        subdir：別台電腦傳整個資料夾過來時的子資料夾。relay：要轉送給別支手機的，放暫存資料夾。"""
+        if relay:
+            import tempfile
+            folder = os.path.join(tempfile.gettempdir(), "PocketDrop", "relay", secrets.token_hex(6))
+        else:
+            folder = self.cfg.data["recv_dir"]
+            for part in re.split(r"[\\/]+", subdir or ""):
+                if part and part not in (".", ".."):
+                    folder = os.path.join(folder, safe_name(part))
         os.makedirs(folder, exist_ok=True)
         root, ext = os.path.splitext(name)
         n = 1
@@ -861,7 +1025,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.deny(401, "not paired")
             if self.route == "/api/ping":
                 return self.reply(200, {"ok": True, "name": self.hub.pc_name, "id": self.hub.cfg.data["pc_id"],
-                                        **self.hub.info()})
+                                        **self.hub.info(), "phones": self.hub.phone_list(did)})
             if self.route == "/api/poll":
                 try:
                     wait = max(0.0, min(float(self.q.get("wait", "25")), 30.0))
@@ -873,7 +1037,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     after = 0
                 items = self.hub.wait_items(wait, after, did)
                 self.hub.touch(did)
-                return self.reply(200, {"items": items, **self.hub.info()})
+                return self.reply(200, {"items": items, **self.hub.info(), "phones": self.hub.phone_list(did)})
             if self.route == "/api/file":
                 return self.send_item_file(did)
             self.deny(404, "not found")
@@ -935,11 +1099,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         last = now
                         self.hub.touch(did)
                         self.hub.emit("xfer", tid, "out", item["name"], sent, size, "run")
-                # 網頁版沒辦法知道下載完了沒，由電腦這邊送完就算數
-                if self.q.get("done") == "1" and sent == size:
-                    self.hub.finish_item(item["id"], True, did)
             finally:
                 self.hub.emit("xfer", tid, "out", item["name"], sent, size, "end")
+        # 網頁版沒辦法知道下載完了沒，由電腦這邊送完就算數（等檔案關了才做，轉送的暫存檔才刪得掉）
+        if self.q.get("done") == "1" and sent == size:
+            self.hub.finish_item(item["id"], True, did)
 
     # ---- POST
     def do_POST(self):
@@ -959,7 +1123,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.upload(did)
             if self.route == "/api/text":
                 text = self.read_body(2_000_000).decode("utf-8", "replace")
-                self.hub.emit("text_in", dev.get("name", T("手機", "Phone")), text)
+                to = self.relay_target(did)
+                if to is False:
+                    return self.reply(404, {"ok": False, "error": "no such phone"})
+                if to:  # 轉送給另一支手機
+                    self.hub.add_text(text, {to}, relay_from=dev.get("name"))
+                    self.hub.emit("relay", dev.get("name"), self.hub.device_label(to), T("文字", "text"))
+                else:
+                    self.hub.emit("text_in", dev.get("name", T("手機", "Phone")), text)
                 return self.reply(200, {"ok": True})
             if self.route == "/api/done":
                 self.read_body(1024)
@@ -976,7 +1147,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def hello(self):
         """手機來打招呼：認識的手機直接給鑰匙；新手機要電腦這邊按「允許」，
         但如果是用 USB 線插在這台電腦上（走 USB 網路共用進來的），代表人就在電腦前面，直接配對。"""
-        self.read_body(4096)
+        body = self.read_body(16384)
+        try:
+            peer = json.loads(body.decode("utf-8")).get("peer") if body else None
+        except (ValueError, AttributeError):
+            peer = None
+        is_pc = isinstance(peer, dict)  # 另一台電腦來配對（會附上我們傳東西過去要用的鑰匙）
         did = self.headers.get("X-Device-Id", "").strip()[:64]
         name = urllib.parse.unquote_plus(self.headers.get("X-Device-Name", "")).strip()[:40] or T("手機", "Phone")
         if not did:
@@ -990,24 +1166,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 dev = devices.get(did)  # 等的時候可能已經允許過了
                 if dev is None:
                     if is_usb_peer(self.client_address[0]):
-                        dev = self.hub.add_device(did, name)
+                        dev = self.hub.add_device(did, name, is_pc)
                         self.hub.emit("log", "✓", T(f"「{name}」用 USB 線接上，已自動配對（之後改用 Wi-Fi 也會自動連）", f"\"{name}\" was connected by USB cable and paired automatically (it will also reconnect over Wi-Fi)"), "ok")
                     elif self.hub.check_pair_code(self.q.get("code", "")):
-                        dev = self.hub.add_device(did, name)
+                        dev = self.hub.add_device(did, name, is_pc)
                         self.hub.emit("log", "✓", T(f"「{name}」掃了 QR code，已自動配對",
                                                     f"\"{name}\" scanned the QR code and was paired automatically"), "ok")
-                    elif not self.hub.ask_pair(name):
+                    elif not self.hub.ask_pair(name, is_pc):
                         return self.reply(403, {"ok": False, "error": "denied"})
                     else:
-                        dev = self.hub.add_device(did, name)
+                        dev = self.hub.add_device(did, name, is_pc)
             finally:
                 self.hub.pair_lock.release()
         elif dev.get("name") != name:
             dev["name"] = name
             self.hub.cfg.save()
+        if is_pc:
+            dev["pc"] = True
+            self.hub.save_peer(str(peer.get("id", ""))[:64], name, peer,
+                               None if self.from_tunnel() else self.client_address[0])
         self.hub.touch(did)
         self.reply(200, {"ok": True, "key": dev["key"], "name": self.hub.pc_name, "id": self.hub.cfg.data["pc_id"],
                          **self.hub.info()})
+
+    def relay_target(self, did):
+        """網址帶 to=手機 id：這個東西是要轉送給另一支手機。回傳那支手機的 id、None（給這台電腦），或 False（沒有這支手機）。"""
+        to = self.q.get("to")
+        if not to:
+            return None
+        dev = self.hub.cfg.data["devices"].get(to)
+        return to if dev and not dev.get("pc") and to != did else False
+
+    def upload_done(self, did, tid, path, done, total):
+        """上傳完成：一般是存進接收資料夾；要轉送的就排給那支手機。"""
+        to = self.relay_target(did)
+        if to:
+            name = self.hub.cfg.data["devices"].get(did, {}).get("name")
+            self.hub.add_files([(path, os.path.basename(path))], {to}, relay_from=name)
+            self.hub.emit("xfer", tid, "in", os.path.basename(path), done, total, "relay", (name, self.hub.device_label(to)))
+        else:
+            self.hub.emit("xfer", tid, "in", os.path.basename(path), done, total, "ok", path)
 
     def upload_part(self, did, uid):
         """分段上傳：遠端模式經過 Cloudflare，一次最多只能傳 100 MB，所以大檔案切成好幾段接起來。
@@ -1025,7 +1223,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if up is None:
                 if offset != 0:
                     return self.deny(409, "unknown upload")
-                path = hub.reserve(safe_name(self.q.get("name", "")))
+                if self.relay_target(did) is False:
+                    return self.deny(404, "no such phone")
+                path = hub.reserve(safe_name(self.q.get("name", "")), self.q.get("dir", ""), bool(self.q.get("to")))
                 up = hub.uploads[uid] = {"path": path, "name": os.path.basename(path), "done": 0, "total": total,
                                          "tid": hub.new_tid(), "time": time.time(), "last": 0.0}
                 hub.emit("xfer", up["tid"], "in", up["name"], 0, total, "run")
@@ -1060,7 +1260,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with hub.upload_lock:
             hub.uploads.pop(uid, None)
         os.replace(part, up["path"])
-        hub.emit("xfer", up["tid"], "in", up["name"], up["done"], total, "ok", up["path"])
+        self.upload_done(did, up["tid"], up["path"], up["done"], total)
         self.reply(200, {"ok": True, "finished": True, "name": up["name"]})
 
     def upload(self, did):
@@ -1071,7 +1271,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             total = int(self.q.get("size", "-1"))
         except ValueError:
             total = -1
-        path = self.hub.reserve(name)
+        if self.relay_target(did) is False:
+            return self.deny(404, "no such phone")
+        path = self.hub.reserve(name, self.q.get("dir", ""), bool(self.q.get("to")))
         part = path + ".part"
         shown = os.path.basename(path)
         tid = self.hub.new_tid()
@@ -1098,7 +1300,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     os.remove(part)
                 except OSError:
                     pass
-            self.hub.emit("xfer", tid, "in", shown, done, total, "ok" if ok else "fail", path)
+                self.hub.emit("xfer", tid, "in", shown, done, total, "fail", path)
+        self.upload_done(did, tid, path, done, total)
         self.reply(200, {"ok": True, "name": shown})
 
     def local(self):
@@ -1177,6 +1380,8 @@ class App:
         self.ts_ip = None
         self.wizard = None
         threading.Thread(target=self.watch_network, daemon=True).start()
+        threading.Thread(target=self.watch_peers, daemon=True).start()
+        self.pc_win = None
 
         root.title(APP_NAME)
         root.configure(bg=BG)
@@ -1226,7 +1431,7 @@ class App:
         body.pack(fill="both", expand=True, padx=px(14), pady=px(12))
 
         # 傳到手機
-        card, box = self.card(body, T("傳到手機", "Send to phone"))
+        card, box = self.card(body, T("傳送", "Send"))
         card.pack(fill="x")
         # 配對了兩支以上的手機才會出現：勾選要傳給哪幾支（一對多）
         self.target_row = tk.Frame(box, bg=CARD)
@@ -1278,6 +1483,7 @@ class App:
         FlatButton(bottom, T("打開接收資料夾", "Open received folder"), self.open_recv, primary=False, small=True).pack(side="left")
         FlatButton(bottom, T("更改…", "Change…"), self.change_recv, primary=False, small=True).pack(side="left", padx=(px(6), 0))
         FlatButton(bottom, T("連接手機", "Connect a phone"), self.show_install, primary=False, small=True).pack(side="right")
+        FlatButton(bottom, T("連接電腦", "Connect a PC"), self.show_pc_dialog, primary=False, small=True).pack(side="right", padx=(0, px(6)))
         bottom2 = tk.Frame(body, bg=BG)
         bottom2.pack(fill="x", pady=(px(6), 0))
         self.recv_label = tk.Label(bottom2, text="", bg=BG, fg=MUTED, font=(FONT, 9), anchor="w")
@@ -1405,6 +1611,15 @@ class App:
             self.log_line("✗", T(f"更新失敗：{event[1]}", f"Update failed: {event[1]}"), "bad")
         elif kind == "update_ready":
             self.install_update(event[1], event[2])
+        elif kind == "relay":
+            self.log_line("↔", T(f"{event[1]} → {event[2]}：{event[3]}（轉送中，對方打開 App 就會收到）",
+                                 f"{event[1]} → {event[2]}: {event[3]} (relaying; delivered when that phone opens the app)"), "muted")
+        elif kind == "pc_sent":
+            self.on_pc_sent(*event[1:])
+        elif kind == "pcs_found":
+            self.on_pcs_found(event[1])
+        elif kind == "pc_paired":
+            self.on_pc_paired(event[1], event[2])
         elif kind == "tunnel":
             self.on_tunnel(event[1])
         elif kind == "wizard":
@@ -1423,7 +1638,10 @@ class App:
                 self.active[tid][2] = done
         else:
             self.active.pop(tid, None)
-            if direction == "in":
+            if direction == "in" and state == "relay":
+                self.log_line("↔", T(f"{path[0]} → {path[1]}：{name}（轉送中，對方打開 App 就會收到）",
+                                     f"{path[0]} → {path[1]}: {name} (relaying; delivered when that phone opens the app)"), "muted")
+            elif direction == "in":
                 if state == "ok":
                     self.log_line("↓", T(f"收到：{name}（{fmt_size(done)}）", f"Received: {name} ({fmt_size(done)})"), "ok",
                                   links=[(T("打開", "Open"), lambda p=path: self.safe_open(p)),
@@ -1461,10 +1679,13 @@ class App:
                       links=[(T("複製", "Copy"), lambda t=text: (self.copy(t), self.flash_status(T("已複製", "Copied"))))])
         self.log_quote(text)
 
-    def on_pair(self, name, answer, done):
+    def on_pair(self, name, answer, done, pc=False):
         self.show_window()
         ok = messagebox.askyesno(
             APP_NAME,
+            T(f"電腦「{name}」想跟這台電腦配對。\n\n允許之後，兩台電腦就能互傳檔案和文字，之後不用再問。\n要允許嗎？",
+              f"The PC \"{name}\" wants to pair with this PC.\n\nOnce allowed, both PCs can send files and text to each other without asking again.\nAllow it?")
+            if pc else
             T(f"手機「{name}」想連到這台電腦。\n\n允許之後，這支手機就能跟電腦互傳檔案，之後不用再問。\n要允許嗎？", f"The phone \"{name}\" wants to connect to this PC.\n\nOnce allowed, it can exchange files with this PC without asking again.\nAllow it?"),
             parent=self.root)
         answer["ok"] = ok
@@ -1501,25 +1722,72 @@ class App:
             return
         targets = self.selected_targets()
         if targets == set():
-            messagebox.showinfo(APP_NAME, T("請先在「傳給」勾選要傳給哪支手機。", "Tick at least one phone under \"Send to\" first."), parent=self.root)
+            messagebox.showinfo(APP_NAME, T("請先在「傳給」勾選要傳給誰。", "Tick at least one target under \"Send to\" first."), parent=self.root)
             return
-        items = self.hub.add_files(files, targets)
+        phones, pcs = self.split_targets(targets)
+        for pid in pcs:
+            threading.Thread(target=self.push_files, args=(pid, files), daemon=True).start()
+        if phones == set():
+            return
+        items = self.hub.add_files(files, phones)
         if len(items) <= 5:
             for it in items:
                 self.log_line("↑", T(f"排隊傳到手機：{it['name']}（{fmt_size(it['size'])}）", f"Queued for phone: {it['name']} ({fmt_size(it['size'])})"))
         else:
             total = sum(it["size"] for it in items)
             self.log_line("↑", T(f"排隊傳到手機：{len(items)} 個檔案，共 {fmt_size(total)}", f"Queued for phone: {len(items)} files, {fmt_size(total)} in total"))
-        self.warn_offline(targets)
+        self.warn_offline(phones)
+
+    @staticmethod
+    def split_targets(targets):
+        """把勾選的對象分成手機（排隊等它來拿）和其他電腦（直接推過去）。"""
+        if targets is None:
+            return None, []
+        return {t for t in targets if not t.startswith("peer:")}, [t[5:] for t in targets if t.startswith("peer:")]
+
+    def push_files(self, pid, files):
+        name = self.cfg.data["peers"].get(pid, {}).get("name", "PC")
+        ok = fail = 0
+        err = ""
+        for path, rel in files:
+            tid = self.hub.new_tid()
+            last = [0.0]
+
+            def progress(done, total, tid=tid, rel=rel):
+                if time.time() - last[0] > 0.2 or done >= total:
+                    last[0] = time.time()
+                    self.hub.emit("xfer", tid, "out", rel, done, total, "run")
+            try:
+                self.hub.push_file(pid, path, rel, progress)
+                ok += 1
+                if len(files) <= 5:
+                    self.hub.emit("pc_sent", name, rel, True, "")
+            except Exception as e:
+                fail += 1
+                err = str(e)
+                if len(files) <= 5:
+                    self.hub.emit("pc_sent", name, rel, False, err)
+            finally:
+                self.hub.emit("xfer", tid, "out", rel, 0, 0, "end")
+        if len(files) > 5:
+            self.hub.emit("pc_sent", name, T(f"{ok} 個檔案", f"{ok} files"), not fail,
+                          T(f"{fail} 個沒傳成功：{err}", f"{fail} failed: {err}") if fail else "")
+
+    def on_pc_sent(self, pc, what, ok, err):
+        if ok:
+            self.log_line("✓", T(f"已傳到電腦「{pc}」：{what}", f"Sent to PC \"{pc}\": {what}"), "ok")
+        else:
+            self.log_line("✗", T(f"傳到電腦「{pc}」失敗：{what}（{err}）", f"Couldn't send to PC \"{pc}\": {what} ({err})"), "bad")
 
     def selected_targets(self):
-        """要傳給哪幾支手機。沒配對過任何手機時回傳 None（第一支連上的拿走）。"""
-        devs = self.cfg.data["devices"]
-        if not devs:
+        """要傳給誰：手機的 id，其他電腦是 "peer:" 開頭。什麼都沒配對時回傳 None（第一支連上的手機拿走）。"""
+        phones, peers = self.hub.phone_ids(), list(self.cfg.data["peers"])
+        if not phones and not peers:
             return None
-        if len(devs) == 1:
-            return set(devs)
-        return {d for d in devs if d not in self.target_vars or self.target_vars[d].get()}
+        if len(phones) == 1 and not peers:
+            return set(phones)
+        ids = phones + ["peer:" + p for p in peers]
+        return {d for d in ids if d not in self.target_vars or self.target_vars[d].get()}
 
     def warn_offline(self, targets):
         online = set(self.hub.online_ids())
@@ -1536,13 +1804,24 @@ class App:
             return
         targets = self.selected_targets()
         if targets == set():
-            messagebox.showinfo(APP_NAME, T("請先在「傳給」勾選要傳給哪支手機。", "Tick at least one phone under \"Send to\" first."), parent=self.root)
+            messagebox.showinfo(APP_NAME, T("請先在「傳給」勾選要傳給誰。", "Tick at least one target under \"Send to\" first."), parent=self.root)
             return
-        self.hub.add_text(text, targets)
+        phones, pcs = self.split_targets(targets)
         self.text_box.delete("1.0", "end")
-        self.log_line("↑", T("排隊傳文字到手機", "Queued text for phone"))
+        for pid in pcs:
+            def run(pid=pid):
+                name = self.cfg.data["peers"].get(pid, {}).get("name", "PC")
+                try:
+                    self.hub.push_text(pid, text)
+                    self.hub.emit("pc_sent", name, T("文字", "text"), True, "")
+                except Exception as e:
+                    self.hub.emit("pc_sent", name, T("文字", "text"), False, str(e))
+            threading.Thread(target=run, daemon=True).start()
+        if phones != set():
+            self.hub.add_text(text, phones)
+            self.log_line("↑", T("排隊傳文字到手機", "Queued text for phone"))
+            self.warn_offline(phones)
         self.log_quote(text)
-        self.warn_offline(targets)
 
     def copy(self, text):
         self.root.clipboard_clear()
@@ -1717,19 +1996,106 @@ class App:
         self.cfg.save()
 
     def manage_pairs(self):
-        devs = self.cfg.data["devices"]
-        if not devs:
-            messagebox.showinfo(APP_NAME, T("目前還沒有配對過的手機。", "No phones are paired yet."), parent=self.root)
+        devs, peers = self.cfg.data["devices"], self.cfg.data["peers"]
+        if not devs and not peers:
+            messagebox.showinfo(APP_NAME, T("目前還沒有配對過的手機或電腦。", "Nothing is paired yet."), parent=self.root)
             return
-        names = T("、", ", ").join(d.get("name", T("手機", "Phone")) for d in devs.values())
-        if messagebox.askyesno(APP_NAME, T(f"已配對的手機：{names}\n\n要全部取消配對嗎？\n之後手機要連線時，電腦會再問一次。", f"Paired phones: {names}\n\nUnpair all of them?\nThe PC will ask again the next time a phone connects."),
+        names = T("、", ", ").join([d.get("name", T("手機", "Phone")) for d in devs.values() if not d.get("pc")]
+                                   + [p.get("name", "PC") + T("（電腦）", " (PC)") for p in peers.values()])
+        if messagebox.askyesno(APP_NAME, T(f"已配對：{names}\n\n要全部取消配對嗎？\n之後要連線時，這台電腦會再問一次。", f"Paired: {names}\n\nUnpair all of them?\nThis PC will ask again the next time they connect."),
                                parent=self.root):
             with self.cfg.lock:
                 devs.clear()
+                peers.clear()
             self.hub.clear_outbox()
             self.cfg.save()
             self.hub.seen.clear()
             self.log_line("", T("已取消所有手機的配對", "Unpaired all phones"), "muted")
+
+    def show_pc_dialog(self):
+        """連接另一台電腦：搜尋同一個網路裡開著口袋快傳的電腦，或輸入位址（也可以貼對方的遠端網址）。"""
+        if self.pc_win and self.pc_win.winfo_exists():
+            self.pc_win.lift()
+            return
+        win = self.pc_win = tk.Toplevel(self.root)
+        win.title(T("連接電腦", "Connect a PC"))
+        win.configure(bg=CARD)
+        win.transient(self.root)
+        win.resizable(False, False)
+        box = tk.Frame(win, bg=CARD)
+        box.pack(padx=px(24), pady=px(20))
+        tk.Label(box, text=T("連接另一台電腦", "Connect another PC"), bg=CARD, fg=TEXT, font=(FONT, 14, "bold")).pack(anchor="w")
+        tk.Label(box, text=T("兩台電腦都要開著口袋快傳。按「連接」後，對方電腦按一次「允許」，兩台就能互傳。",
+                             "PocketDrop must be open on both PCs. Click Connect, then click Allow on the other PC once; after that both can send to each other."),
+                 bg=CARD, fg=MUTED, font=(FONT, 10), justify="left", wraplength=px(420)).pack(anchor="w", pady=(px(6), 0))
+        self.pc_list = tk.Frame(box, bg=CARD)
+        self.pc_list.pack(fill="x", pady=(px(12), 0))
+        row = tk.Frame(box, bg=CARD)
+        row.pack(fill="x", pady=(px(12), 0))
+        tk.Label(row, text=T("或輸入對方的 IP／遠端網址：", "Or type its IP / remote address:"), bg=CARD, fg=TEXT, font=(FONT, 10)).pack(anchor="w")
+        self.pc_entry = tk.Entry(row, font=(FONT, 10), relief="flat", bg=FIELD, highlightthickness=1, highlightbackground=BORDER)
+        self.pc_entry.pack(side="left", fill="x", expand=True, pady=(px(4), 0), ipady=px(4))
+        FlatButton(row, T("連接", "Connect"), lambda: self.pair_pc(self.pc_entry.get().strip()), small=True).pack(side="left", padx=(px(8), 0), pady=(px(4), 0))
+        self.pc_status = tk.Label(box, text="", bg=CARD, fg=ACCENT, font=(FONT, 10), justify="left", wraplength=px(420))
+        self.pc_status.pack(anchor="w", pady=(px(10), 0))
+        foot = tk.Frame(box, bg=CARD)
+        foot.pack(fill="x", pady=(px(14), 0))
+        FlatButton(foot, T("重新搜尋", "Search again"), self.search_pcs, primary=False).pack(side="left")
+        FlatButton(foot, T("關閉", "Close"), win.destroy).pack(side="right")
+        self.search_pcs()
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_reqheight()) // 3)
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def search_pcs(self):
+        self.pc_status.configure(text=T("◌ 搜尋中…", "◌ Searching…"), fg=ACCENT)
+        threading.Thread(target=lambda: self.hub.emit("pcs_found", discover_pcs(self.cfg.data["pc_id"])), daemon=True).start()
+
+    def on_pcs_found(self, pcs):
+        if not (self.pc_win and self.pc_win.winfo_exists()):
+            return
+        for w in self.pc_list.winfo_children():
+            w.destroy()
+        for pc in pcs:
+            row = tk.Frame(self.pc_list, bg=ACCENT_SOFT)
+            row.pack(fill="x", pady=(0, px(6)))
+            tk.Label(row, text=f"{pc['name']}（{pc['host']}）", bg=ACCENT_SOFT, fg=TEXT, font=(FONT, 10)).pack(side="left", padx=px(10), pady=px(8))
+            if pc["id"] in self.cfg.data["peers"]:
+                tk.Label(row, text=T("已配對", "Paired"), bg=ACCENT_SOFT, fg=OK_COLOR, font=(FONT, 10, "bold")).pack(side="right", padx=px(10))
+            else:
+                FlatButton(row, T("連接", "Connect"), lambda pc=pc: self.pair_pc(f"{pc['host']}:{pc['port']}"), small=True).pack(side="right", padx=px(6), pady=px(4))
+        self.pc_status.configure(fg=MUTED, text=T(f"找到 {len(pcs)} 台。" if pcs else "同一個網路裡找不到其他開著口袋快傳的電腦。可以輸入對方的 IP（對方視窗上方有寫）。",
+                                                  f"Found {len(pcs)}." if pcs else "No other PC running PocketDrop was found on this network. You can type its IP (shown at the top of its window)."))
+
+    def pair_pc(self, addr):
+        if not addr:
+            return
+        host, port = addr, HTTP_PORT
+        if not addr.startswith("https://"):
+            addr = addr.replace("http://", "").rstrip("/")
+            host, _, p = addr.partition(":")
+            port = int(p) if p.isdigit() else HTTP_PORT
+        self.pc_status.configure(text=T("◌ 已送出，請到對方電腦按「允許」…", "◌ Sent. Click Allow on the other PC…"), fg=ACCENT)
+
+        def run():
+            try:
+                self.hub.emit("pc_paired", True, self.hub.pair_pc(host, port))
+            except urllib.error.HTTPError as e:
+                self.hub.emit("pc_paired", False, T("對方沒有允許", "The other PC declined") if e.code == 403 else f"HTTP {e.code}")
+            except Exception as e:
+                self.hub.emit("pc_paired", False, T(f"連不上（{e}）", f"Couldn't connect ({e})"))
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_pc_paired(self, ok, msg):
+        if ok:
+            self.log_line("✓", T(f"已跟電腦「{msg}」配對，在「傳給」勾選它就能傳過去", f"Paired with PC \"{msg}\". Tick it under \"Send to\" to send there"), "ok")
+            self.target_sig = None
+        if self.pc_win and self.pc_win.winfo_exists():
+            self.pc_status.configure(text=(T(f"✓ 已跟「{msg}」配對！", f"✓ Paired with \"{msg}\"!") if ok else T(f"✗ {msg}", f"✗ {msg}")),
+                                     fg=OK_COLOR if ok else BAD_COLOR)
+            if ok:
+                self.search_pcs()
 
     def draw_qr(self, parent, url, cell):
         if not qrcode:
@@ -1762,6 +2128,13 @@ class App:
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
         y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_reqheight()) // 4)
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def other_addresses(self, text):
+        """電腦有好幾個網路時（例如電腦開了熱點給手機），QR code 用的位址手機可能連不到，把其他位址也列出來。"""
+        others = [ip for ip in pc_addresses() if ip != self.ip and ipaddress.ip_address(ip) not in TAILSCALE_NET]
+        if others:
+            text(T("連不上的話（例如手機連的是這台電腦開的熱點），改用：", "Can't connect (e.g. the phone is on this PC's hotspot)? Try: ")
+                 + "  ".join(f"http://{ip}:{HTTP_PORT}/" for ip in others), MUTED, 9)
 
     def close_wizard(self):
         self.wizard_watch = False
@@ -1805,6 +2178,7 @@ class App:
             text(T("手機要跟電腦連同一個 Wi-Fi。掃了之後按「下載 Android App」。",
                    "The phone must be on the same Wi-Fi. After scanning, tap \"Download Android app\"."))
             self.draw_qr(box, url, px(4))
+            self.other_addresses(text)
             text(T("裝好之後打開 App，它會自動找到這台電腦（用傳輸線的話，App 裡按「用 USB 線連」）。",
                    "Once installed, open the app and it finds this PC by itself (on a cable, tap \"Use USB cable\" in the app)."))
             self.wizard_watch = True
@@ -1815,6 +2189,7 @@ class App:
                    "Scan this QR code with the camera. PocketDrop opens in Safari and pairs automatically. The phone must be on the same Wi-Fi."), TEXT)
             self.draw_qr(box, url, px(6))
             text(T(f"或在 Safari 輸入：http://{self.ip}:{HTTP_PORT}/", f"or open in Safari: http://{self.ip}:{HTTP_PORT}/"), ACCENT)
+            self.other_addresses(text)
             text(T("打開後按 Safari 的「分享 → 加入主畫面」，下次從主畫面打開就好。",
                    "Then tap Share → Add to Home Screen in Safari, and open it from there next time."))
             if self.hub.tunnel_url():
@@ -1898,31 +2273,44 @@ class App:
             self.ip_label.configure(text=T(f"本機 IP：{self.ip}（手機找不到電腦時，在 App 裡輸入這個）", f"This PC's IP: {self.ip} (type it in the app if needed)"))
         self.root.after(1000, self.tick)
 
+    def watch_peers(self):
+        """每 20 秒看一下配對過的電腦連不連得到（顯示在「傳給」和上方狀態）。"""
+        while True:
+            for pid in list(self.cfg.data["peers"]):
+                self.hub.peer_base(pid)
+            time.sleep(20)
+
     def watch_network(self):
         while True:
             self.ip = lan_ip()
             self.ts_ip = tailscale_ip()
             time.sleep(5)
 
-    def refresh_targets(self):
-        devs = self.cfg.data["devices"]
+    def target_entries(self):
+        """「傳給」要列出的對象：(id, 顯示的名字, 在不在線)。"""
         online = set(self.hub.online_ids())
-        sig = tuple((d, self.hub.device_label(d), d in online) for d in devs)
+        out = [(d, self.hub.device_label(d), d in online) for d in self.hub.phone_ids()]
+        for pid, peer in list(self.cfg.data["peers"].items()):
+            out.append(("peer:" + pid, peer.get("name", "PC") + T("（電腦）", " (PC)"), bool(self.hub.peer_online.get(pid))))
+        return out
+
+    def refresh_targets(self):
+        entries = self.target_entries()
+        sig = tuple(entries)
         if sig == self.target_sig:
             return
         self.target_sig = sig
         for w in self.target_row.winfo_children():
             w.destroy()
-        if len(devs) < 2:
+        if len(entries) < 2 and not self.cfg.data["peers"]:
             self.target_row.pack_forget()
             return
         tk.Label(self.target_row, text=T("傳給：", "Send to:"), bg=CARD, fg=TEXT, font=(FONT, 10, "bold")).pack(side="left", anchor="n")
         grid = tk.Frame(self.target_row, bg=CARD)
         grid.pack(side="left", fill="x")
-        for i, did in enumerate(devs):
+        for i, (did, label, on) in enumerate(entries):
             var = self.target_vars.setdefault(did, tk.BooleanVar(value=True))
-            on = did in online
-            tk.Checkbutton(grid, text=("● " if on else "○ ") + self.hub.device_label(did), variable=var,
+            tk.Checkbutton(grid, text=("● " if on else "○ ") + label, variable=var,
                            bg=CARD, fg=OK_COLOR if on else MUTED, activebackground=CARD, selectcolor=CARD,
                            font=(FONT, 10)).grid(row=i // 3, column=i % 3, sticky="w", padx=(px(4), 0))
         if not self.target_row.winfo_ismapped():
@@ -1935,7 +2323,8 @@ class App:
         self.refresh_status()
 
     def refresh_status(self):
-        names = self.hub.online_names()
+        names = self.hub.online_names() + [peer.get("name", "PC") + T("（電腦）", " (PC)")
+                                           for pid, peer in list(self.cfg.data["peers"].items()) if self.hub.peer_online.get(pid)]
         pending = self.hub.pending_count()
         if names:
             text, color = T("● 已連線：", "● Connected: ") + T("、", ", ").join(dict.fromkeys(names)), HEAD_ONLINE
