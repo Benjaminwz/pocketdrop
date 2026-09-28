@@ -20,6 +20,8 @@ Android 和 iPhone 都能用，不用註冊任何帳號。Android App 只有 <b>
 - **純有線模式：** 開了之後完全不走 Wi-Fi，Wi-Fi 上的裝置連不到、也找不到這台電腦，隱私最高
 - **遠端模式（免帳號）：** 手機在外面用行動網路也能跟家裡的電腦互傳，勾一下就開
 - **iPhone 不用裝 App：** 掃電腦上的 QR code，直接在 Safari 裡用；「加入主畫面」後就跟 App 一樣
+- **別台電腦不用裝：** 在任何電腦的瀏覽器打開 `http://電腦IP:47850` 就是網頁版，檔案（連整個資料夾）直接拖進網頁、Ctrl+V 貼上截圖，收到的檔案自動下載
+- **完全不用電腦版：** Android App 打開「網頁分享」，同一個 Wi-Fi（或手機熱點）裡的電腦、iPhone、別支手機用瀏覽器打開手機顯示的網址，就能直接跟這支手機互傳；第一次連時手機會問要不要允許
 - **連接手機精靈：** 第一次打開會一步步帶你連手機；Android 接上傳輸線（選「檔案傳輸」）後，電腦會自動把 App 安裝檔放進手機
 - **Windows 安裝精靈：** 一般的「下一步」安裝，會建好捷徑和右鍵「傳送到」，也會替防火牆開好私人與公用網路
 - **一鍵更新：** GitHub 有新版時，電腦版右上角會出現「更新」按鈕，按一下自動下載安裝（會核對校驗碼）；電腦更新後，手機 App 會跟著出現「更新 App」按鈕，iPhone 網頁版會自動換成新版
@@ -101,10 +103,10 @@ python pc/pocketdrop.pyw
 **全部打包**（Windows）：先準備好下面 Android 的工具、`pip install pyinstaller`，以及 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.9.0
+powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.0
 ```
 
-這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.9.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.9.0 → 10900）。
+這會做出 `PocketDrop.apk`、`dist\PocketDrop.exe` 和 `dist\PocketDrop-Setup-1.10.0.exe`。`pc\pocketdrop.pyw` 裡的 `APP_VERSION` 要跟 `-Version` 一樣；Android 的版本碼會自動算（1.10.0 → 11000）。
 
 **只做 Android App：** 不需要 Android Studio 或 Gradle，只要 JDK 17 和 Android SDK 命令列工具：
 
@@ -132,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **更新：** 電腦版問 GitHub 的 `releases/latest`，下載對應的檔案並核對 GitHub 提供的 SHA-256。安裝版用新的安裝檔靜默安裝（`/SILENT`）；免安裝版等程式關掉後換掉 exe。手機 App 從 `/api/ping`、`/api/poll` 的 `apk` 欄位知道電腦帶著哪一版，比自己新就從電腦下載，交給系統的 PackageInstaller 安裝。
 - **電腦對電腦：** 配對時發起的電腦會把「對方傳東西過來要用的鑰匙」一起交給對方，所以按一次允許就能雙向傳。傳送是直接推過去（分段上傳，帶 `dir` 保留資料夾），不用排隊。也會記住對方的登記頻道（`rv`），遠端網址連不到時到 ntfy.sh 查新的（最多 2 分鐘查一次）。邀請連結就是手機用的萬用連結，貼上後會用裡面的 `rv` 找到對方、用配對碼免按允許。
 - **手機對手機：** 手機上傳或傳文字時帶 `to=另一支手機`，電腦把檔案放暫存資料夾，排給那支手機，送完就刪掉。
-- **網頁版：** 電腦版在 `/web` 提供同一套功能的網頁，走一樣的 API。
+- **網頁版：** 電腦版在 `/web` 提供同一套功能的網頁，走一樣的 API（不是 Android 的瀏覽器打開 `/` 也會直接帶到這裡）。Android App 的「網頁分享」（`WebShare.java`）用 `ServerSocket` 自己實作同一套 API 的子集（hello、poll、file、done、upload、text），網頁是打包進 APK 的同一份 `web.html`（`assets/`），只把 `ON_PHONE` 換成 true。只接受區網位址（純有線模式時只接受 USB），新瀏覽器要在手機上按允許。
 - **QR code 配對：** QR code 網址裡帶一個 10 分鐘有效的配對碼，帶著它來打招呼的手機直接配對。
 - **手機存檔：** 用 MediaStore 存到「下載」資料夾，不需要任何儲存權限。
 
@@ -149,6 +151,8 @@ powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Tools <放 jdk-17* 和 s
 - **Two-way transfer:** files and whole folders both ways, plus text and links. Text you receive is copied automatically.
 - **PC to PC:** click "Connect a PC" and the other PC clicks Allow once; after that both can send to each other (folders keep their structure). For a PC somewhere else: turn on Remote mode on both, click "Copy invite link" on one and paste it on the other (no Allow needed). After that they reach each other from anywhere, even after the remote address changes.
 - **Phone to phone:** pick another phone under "Send to" and the PC relays it (Android and iPhone mixed). The other phone gets it when it opens the app or page.
+- **No install on other computers:** open `http://<PC IP>:47850` in any browser for the web version. Drag files or whole folders onto the page, paste screenshots with Ctrl+V, and received files download automatically.
+- **No PC app at all:** turn on **Web sharing** in the Android app, and any computer, iPhone or phone on the same Wi-Fi (or the phone's hotspot) can open the address the phone shows and exchange files with it directly. The phone asks before letting a new browser in.
 - **One-to-many:** with several phones paired, tick which ones to send to (Android and iPhone mixed). Phones that are offline pick it up later.
 - **USB cable pairing:** plug in and turn on USB tethering, and the phone pairs itself with no confirmation. While the cable is plugged in, transfers use it, so it also works without Wi-Fi.
 - **Cable-only mode:** nothing goes over Wi-Fi, and devices on Wi-Fi can't reach or even discover the PC.

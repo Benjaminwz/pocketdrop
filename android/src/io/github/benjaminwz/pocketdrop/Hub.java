@@ -79,6 +79,8 @@ public class Hub {
         public volatile Uri uri;
         /** 手機對手機（透過電腦轉送）：傳給誰／誰傳來的。null = 就是跟電腦傳。 */
         public volatile String peer;
+        /** 直接跟瀏覽器傳（網頁分享），不經過電腦。 */
+        public volatile boolean web;
 
         Entry(int kind) { this.kind = kind; }
     }
@@ -131,6 +133,8 @@ public class Hub {
     public volatile List<Phone> phones = new ArrayList<>();
     /** 要傳給誰：null = 電腦；否則是另一支手機的 id（電腦幫忙轉送）。 */
     public volatile String sendTo, sendToName;
+    /** 網頁分享：同一個 Wi-Fi 裡沒裝 App 的電腦、iPhone 用瀏覽器直接連這支手機。sendTo 是 "web:" 開頭的就是傳給它們。 */
+    public final WebShare web;
 
     public static final String ACTION_INSTALL = "io.github.benjaminwz.pocketdrop.INSTALL_STATUS";
     /** 電腦帶著的手機 App 版本（電腦從 GitHub 更新後就會變新）；比自己新就能按「更新 App」。 */
@@ -158,6 +162,7 @@ public class Hub {
         pcId = prefs.getString("pc_id", "");
         pcName = prefs.getString("pc_name", T("電腦", "PC"));
         usbOnly = prefs.getBoolean("usb_only", false);
+        web = new WebShare(this, app, prefs);
         try {
             myCode = app.getPackageManager().getPackageInfo(app.getPackageName(), 0).getLongVersionCode();
         } catch (Exception e) {
@@ -267,6 +272,11 @@ public class Hub {
                 e.name = last != null ? last : T("檔案", "file");
             }
             addEntry(e);
+            if (to != null && to.startsWith("web:")) {  // 傳給網頁：排著等它來拿
+                e.web = true;
+                web.queueFile(to.substring(4), uri, e);
+                continue;
+            }
             sender.execute(() -> upload(uri, e, to));
         }
     }
@@ -277,6 +287,11 @@ public class Hub {
         e.text = text;
         e.peer = to == null ? null : sendToName;
         addEntry(e);
+        if (to != null && to.startsWith("web:")) {
+            e.web = true;
+            web.queueText(to.substring(4), text, e);
+            return;
+        }
         sender.execute(() -> {
             if (!waitConnected(60000)) {
                 fail(e, T("沒有連上電腦", "Not connected to a PC"));
@@ -585,7 +600,8 @@ public class Hub {
             if (p.id.equals(sendTo)) keep = true;
         }
         phones = list;
-        if (!keep) setSendTo(null, null);  // 選的那支手機被取消配對了：改回傳給電腦
+        // 選的那支手機被取消配對了：改回傳給電腦（選的是網頁就不管）
+        if (!keep && (sendTo == null || !sendTo.startsWith("web:"))) setSendTo(null, null);
         changed();
     }
 
@@ -837,7 +853,7 @@ public class Hub {
         return false;
     }
 
-    private static boolean isUsbHost(String h) {
+    static boolean isUsbHost(String h) {
         try {
             // 只接受數字 IP，不會去查 DNS
             return h != null && h.matches("[0-9.]+") && inNets(InetAddress.getByName(h), usbAddresses());
@@ -1190,6 +1206,29 @@ public class Hub {
         changed();
     }
 
+    // 給網頁分享（WebShare）更新紀錄用
+    void failEntry(Entry e, String why) { fail(e, why); }
+
+    void okEntry(Entry e) {
+        e.error = null;
+        e.state = Entry.OK;
+        changed();
+    }
+
+    void startEntry(Entry e) {
+        e.state = Entry.RUNNING;
+        e.done = 0;
+        e.error = null;
+        e.startedAt = System.currentTimeMillis();
+        changed();
+    }
+
+    void waitEntry(Entry e, String why) {
+        e.state = Entry.WAITING;
+        e.error = why;
+        changed();
+    }
+
     private HttpURLConnection open(String h, int p, String path, String k) throws IOException {
         // h 可以是 IP，也可以是遠端模式的完整網址（https://….trycloudflare.com）
         URL u = h.startsWith("https://") || h.startsWith("http://") ? new URL(h + path) : new URL("http", h, p, path);
@@ -1211,13 +1250,13 @@ public class Hub {
         }
     }
 
-    private static String clean(String s) {
+    static String clean(String s) {
         StringBuilder b = new StringBuilder();
         for (char ch : s.toCharArray()) b.append(ch < 32 || "\\:*?\"<>|".indexOf(ch) >= 0 ? '_' : ch);
         return b.toString().trim();
     }
 
-    private String deviceId() {
+    String deviceId() {
         String id = prefs.getString("device_id", null);
         if (id == null) {
             id = UUID.randomUUID().toString();
@@ -1226,7 +1265,7 @@ public class Hub {
         return id;
     }
 
-    private String deviceName() {
+    String deviceName() {
         String n = null;
         try {
             n = Settings.Global.getString(app.getContentResolver(), Settings.Global.DEVICE_NAME);
@@ -1236,7 +1275,7 @@ public class Hub {
         return n;
     }
 
-    private void addEntry(final Entry e) {
+    void addEntry(final Entry e) {
         main.post(() -> {
             entries.add(0, e);
             while (entries.size() > 60) entries.remove(entries.size() - 1);

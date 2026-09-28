@@ -59,6 +59,11 @@ public class MainActivity extends Activity implements Hub.Listener {
     private TextView sendTo;
     private TextView updateText;
     private Button updateBtn;
+    private Switch webSwitch;
+    private TextView webText, webAddr;
+    private Button webForget;
+    private WebShare.Ask askShown;
+    private AlertDialog askDialog;
     private int shownState = -1;
     private List<Hub.Pc> choiceShown;
     private boolean keepOn;
@@ -314,15 +319,32 @@ public class MainActivity extends Activity implements Hub.Listener {
         list = vertical();
         logCard.addView(list);
 
+        // 網頁分享：沒裝 App 的電腦、iPhone 用瀏覽器直接連這支手機
+        LinearLayout webCard = card(root, T("網頁分享（對方不用裝）", "Web sharing (nothing to install)"));
+        webSwitch = switchView(T("開啟網頁分享", "Turn on web sharing"), hub.web.isOn());
+        webSwitch.setOnCheckedChangeListener((b, on) -> {
+            if (on != hub.web.isOn()) hub.web.setOn(on);
+        });
+        webCard.addView(webSwitch, new LinearLayout.LayoutParams(-1, -2));
+        webText = label("", 13, MUTED, false);
+        webText.setPadding(0, dp(6), 0, 0);
+        webCard.addView(webText);
+        webAddr = label("", 18, ACCENT, true);
+        webAddr.setTextIsSelectable(true);
+        webAddr.setPadding(0, dp(8), 0, 0);
+        webCard.addView(webAddr);
+        webForget = button(T("忘記連過的瀏覽器", "Forget paired browsers"), false, v -> new AlertDialog.Builder(this)
+                .setTitle(T("忘記連過的瀏覽器？", "Forget paired browsers?"))
+                .setMessage(T("之後它們要再連，這裡會重新問要不要允許。", "They'll have to be allowed again next time."))
+                .setPositiveButton(T("忘記", "Forget"), (d, w) -> hub.web.forgetAll())
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .show());
+        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-1, dp(44));
+        fp.topMargin = dp(10);
+        webCard.addView(webForget, fp);
+
         LinearLayout priv = card(root, T("隱私", "Privacy"));
-        Switch usbOnly = new Switch(this);
-        usbOnly.setText(T("純有線模式", "Cable-only mode"));
-        usbOnly.setTextSize(15);
-        usbOnly.setTextColor(TEXT);
-        usbOnly.setChecked(hub.usbOnly);
-        int[][] states = {{android.R.attr.state_checked}, {}};
-        usbOnly.setThumbTintList(new ColorStateList(states, new int[]{ACCENT, 0xFFF4F4F4}));
-        usbOnly.setTrackTintList(new ColorStateList(states, new int[]{0x883558D4, 0x44000000}));
+        Switch usbOnly = switchView(T("純有線模式", "Cable-only mode"), hub.usbOnly);
         usbOnly.setOnCheckedChangeListener((b, on) -> hub.setUsbOnly(on));
         priv.addView(usbOnly, new LinearLayout.LayoutParams(-1, -2));
         TextView privText = label(T("只用傳輸線（USB 網路共用）連電腦，完全不走 Wi-Fi，也不會在 Wi-Fi 上找電腦。電腦版也有同名的開關，兩邊都開最安全。",
@@ -358,8 +380,12 @@ public class MainActivity extends Activity implements Hub.Listener {
             actions.setVisibility(actions.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         }
         if (s == Hub.CHOOSE && hub.choices != choiceShown) showChoose();
-        sendTo.setVisibility(hub.phones.isEmpty() ? View.GONE : View.VISIBLE);
-        sendTo.setText(T("傳給：", "Send to: ") + (hub.sendTo == null ? T("電腦「", "PC \"") + hub.pcName() + T("」", "\"") : hub.sendToName) + "  ▾");
+        List<WebShare.Client> webClients = hub.web.clients();
+        sendTo.setVisibility(hub.phones.isEmpty() && webClients.isEmpty() ? View.GONE : View.VISIBLE);
+        String target = hub.sendTo == null ? T("電腦「", "PC \"") + hub.pcName() + T("」", "\"")
+                : hub.sendTo.startsWith("web:") ? T("網頁「", "Web page \"") + hub.sendToName + T("」", "\"") : hub.sendToName;
+        sendTo.setText(T("傳給：", "Send to: ") + target + "  ▾");
+        renderWeb(webClients);
         boolean showUpdate = hub.updating || hub.updateAvailable() || hub.updateError != null;
         updateCard.setVisibility(showUpdate ? View.VISIBLE : View.GONE);
         if (showUpdate) {
@@ -380,6 +406,48 @@ public class MainActivity extends Activity implements Hub.Listener {
             keepOn = busy;
             if (busy) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+    }
+
+    private void renderWeb(List<WebShare.Client> clients) {
+        boolean on = hub.web.isOn();
+        if (webSwitch.isChecked() != on) webSwitch.setChecked(on);
+        List<String> addrs = on ? hub.web.addresses() : new ArrayList<>();
+        if (!on) {
+            webText.setText(hub.web.error != null ? hub.web.error
+                    : T("打開後，同一個 Wi-Fi（或連著這支手機熱點）的電腦、iPhone、別支手機，用瀏覽器打開這裡給的網址就能跟這支手機互傳。對方什麼都不用裝，也不用電腦版。",
+                        "When it's on, any computer, iPhone or other phone on the same Wi-Fi (or on this phone's hotspot) can open the address shown here in a browser and exchange files with this phone. Nothing to install, no PC app needed."));
+        } else if (addrs.isEmpty()) {
+            webText.setText(T("手機要連上 Wi-Fi 或開熱點，網頁分享才用得了。", "Connect this phone to Wi-Fi or turn on its hotspot to use web sharing."));
+        } else {
+            List<String> online = new ArrayList<>();
+            for (WebShare.Client c : clients) if (c.online()) online.add(c.name);
+            webText.setText(T("在對方的瀏覽器輸入下面的網址（要連同一個 Wi-Fi）。第一次連時，這支手機會問要不要允許。這個 App 要開著。",
+                    "Type the address below into a browser on the other device (same Wi-Fi). The first time, this phone asks whether to allow it. Keep this app open.")
+                    + (online.isEmpty() ? "" : T("\n● 已連上：", "\n● Connected: ") + TextUtils.join(T("、", ", "), online)));
+        }
+        webAddr.setText(TextUtils.join("\n", addrs));
+        webAddr.setVisibility(addrs.isEmpty() ? View.GONE : View.VISIBLE);
+        webForget.setVisibility(clients.isEmpty() ? View.GONE : View.VISIBLE);
+
+        final WebShare.Ask a = hub.web.ask;
+        if (a == null && askDialog != null) {  // 等太久，對方已經放棄了
+            askDialog.dismiss();
+            askDialog = null;
+        }
+        if (a != null && a != askShown) {
+            askShown = a;
+            askDialog = new AlertDialog.Builder(this)
+                    .setTitle(T("要讓這個瀏覽器連進來嗎？", "Let this browser connect?"))
+                    .setMessage(T("「", "\"") + a.name + T("」想跟這支手機互傳檔案。是你自己的裝置才按允許。",
+                            "\" wants to exchange files with this phone. Only allow it if it's your own device."))
+                    .setPositiveButton(T("允許", "Allow"), (d, w) -> a.answer = true)
+                    .setNegativeButton(T("拒絕", "Decline"), (d, w) -> a.answer = false)
+                    .setOnDismissListener(d -> {
+                        if (a.answer == null) a.answer = false;
+                        if (askDialog == d) askDialog = null;
+                    })
+                    .show();
         }
     }
 
@@ -450,7 +518,8 @@ public class MainActivity extends Activity implements Hub.Listener {
         boolean showBar = false;
         switch (e.state) {
             case Hub.Entry.WAITING:
-                sub = e.error != null ? e.error : up ? T("等待連上電腦…", "Waiting for the PC…") : T("準備接收…", "Getting ready…");
+                sub = e.error != null ? e.error : up && e.web ? T("等對方的網頁來接收…（網頁要開著）", "Waiting for the web page to pick it up… (keep it open)")
+                        : up ? T("等待連上電腦…", "Waiting for the PC…") : T("準備接收…", "Getting ready…");
                 break;
             case Hub.Entry.RUNNING:
                 if (isText) {
@@ -474,6 +543,7 @@ public class MainActivity extends Activity implements Hub.Listener {
                 color = GREEN;
                 if (e.kind == Hub.Entry.DOWN) sub = T("✓ 已存到 下載/PocketDrop（", "✓ Saved to Download/PocketDrop (") + size(e.total) + T("）・點一下打開", ") · tap to open");
                 else if (e.kind == Hub.Entry.TEXT_IN) sub = T("✓ 已複製・點一下再複製", "✓ Copied · tap to copy again");
+                else if (e.web) sub = T("✓ 已傳給「", "✓ Sent to \"") + e.peer + T("」", "\"") + (isText ? "" : T("（", " (") + size(e.total) + T("）", ")"));
                 else if (e.peer != null) sub = T("✓ 已交給電腦轉送，對方打開 App 就會收到", "✓ Handed to the PC; delivered when they open the app");
                 else sub = T("✓ 已傳到電腦", "✓ Sent to PC") + (isText ? "" : T("（", " (") + size(e.total) + T("）", ")"));
                 break;
@@ -562,16 +632,22 @@ public class MainActivity extends Activity implements Hub.Listener {
     /** 選要傳給誰：電腦，或其他手機（透過電腦轉送，對方打開 App 就會收到）。 */
     private void chooseTarget() {
         final List<Hub.Phone> list = hub.phones;
-        String[] names = new String[list.size() + 1];
+        final List<WebShare.Client> webs = hub.web.clients();
+        String[] names = new String[list.size() + webs.size() + 1];
         names[0] = T("電腦「", "PC \"") + hub.pcName() + T("」", "\"");
         for (int i = 0; i < list.size(); i++) {
             names[i + 1] = list.get(i).name + (list.get(i).online ? T("（在線）", " (online)") : T("（離線，打開 App 後會收到）", " (offline, gets it later)"));
+        }
+        for (int i = 0; i < webs.size(); i++) {  // 網頁分享連過的瀏覽器（直接傳，不經過電腦）
+            names[list.size() + 1 + i] = T("網頁「", "Web page \"") + webs.get(i).name + T("」", "\"")
+                    + (webs.get(i).online() ? T("（在線）", " (online)") : T("（沒開著，打開網頁後會收到）", " (not open, gets it when opened)"));
         }
         new AlertDialog.Builder(this)
                 .setTitle(T("要傳給誰？", "Send to whom?"))
                 .setItems(names, (d, w) -> {
                     if (w == 0) hub.setSendTo(null, null);
-                    else hub.setSendTo(list.get(w - 1).id, list.get(w - 1).name);
+                    else if (w <= list.size()) hub.setSendTo(list.get(w - 1).id, list.get(w - 1).name);
+                    else hub.setSendTo("web:" + webs.get(w - 1 - list.size()).id, webs.get(w - 1 - list.size()).name);
                 })
                 .setNegativeButton(T("取消", "Cancel"), null)
                 .show();
@@ -617,6 +693,18 @@ public class MainActivity extends Activity implements Hub.Listener {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.rightMargin = dp(10);
         actions.addView(b, lp);
+    }
+
+    private Switch switchView(String text, boolean on) {
+        Switch s = new Switch(this);
+        s.setText(text);
+        s.setTextSize(15);
+        s.setTextColor(TEXT);
+        s.setChecked(on);
+        int[][] states = {{android.R.attr.state_checked}, {}};
+        s.setThumbTintList(new ColorStateList(states, new int[]{ACCENT, 0xFFF4F4F4}));
+        s.setTrackTintList(new ColorStateList(states, new int[]{0x883558D4, 0x44000000}));
+        return s;
     }
 
     private Button button(String text, boolean primary, View.OnClickListener l) {

@@ -51,8 +51,9 @@ Write-Host "3/6 d8"
 $classes = Get-ChildItem "$Out\classes" -Recurse -Filter *.class | ForEach-Object { $_.FullName }
 Run "$BT\d8.bat" (@("--release", "--min-api", "29", "--lib", $Jar, "--output", "$Out\dex") + $classes)
 
-Write-Host "4/6 add classes.dex"
-python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'a',zipfile.ZIP_DEFLATED); z.write(sys.argv[2],'classes.dex'); z.close()" "$Out\unsigned.apk" "$Out\dex\classes.dex"
+Write-Host "4/6 add classes.dex + web page"
+# assets/web.html + assets/icon.png: the phone's "web sharing" serves the same web page as the PC app
+python -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'a',zipfile.ZIP_DEFLATED); z.write(sys.argv[2],'classes.dex'); z.write(sys.argv[3],'assets/web.html'); z.write(sys.argv[4],'assets/icon.png'); z.close()" "$Out\unsigned.apk" "$Out\dex\classes.dex" "$Root\pc\web.html" "$Root\pc\icon-180.png"
 if ($LASTEXITCODE -ne 0) { throw "zip failed" }
 
 Write-Host "5/6 zipalign"

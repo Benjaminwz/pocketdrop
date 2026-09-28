@@ -75,7 +75,7 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 # Android App 的網址開頭和套件名稱：網頁上的「用 App 打開」靠這兩個叫出 App
 APP_SCHEME = "pocketdrop"
 APP_PACKAGE = "io.github.benjaminwz.pocketdrop"
@@ -1118,8 +1118,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.parse()
         try:
             if self.route == "/":
-                # iPhone / iPad 裝不了 APK，直接帶到網頁版（配對碼一起帶過去）
-                if re.search(r"iPhone|iPad|iPod", self.headers.get("User-Agent", "")):
+                # 不是 Android（iPhone、iPad、別台電腦的瀏覽器）裝不了 APK，直接帶到網頁版（配對碼一起帶過去）
+                if "Android" not in self.headers.get("User-Agent", ""):
                     query = urllib.parse.urlsplit(self.path).query
                     return self.redirect("/web" + ("?" + query if query else ""))
                 html = download_page(self.headers.get("Accept-Language"))
@@ -2164,6 +2164,11 @@ class App:
             tk.Label(away, text=T("兩台電腦都在主畫面勾「遠端模式」，再回來這裡，就能用邀請連結配對；配對過後在哪裡都能互傳。",
                                   "Turn on Remote mode on both PCs, then come back here to pair with an invite link. Once paired, they can send to each other from anywhere."),
                      bg=ACCENT_SOFT, fg=MUTED, font=(FONT, 10), justify="left", wraplength=px(400)).pack(anchor="w", padx=px(10), pady=(px(4), px(8)))
+        tk.Label(box, text=T(f"對方電腦不想安裝？在它的瀏覽器打開 http://{self.ip}:{HTTP_PORT} 就能用網頁版互傳（檔案可以直接拖進網頁）。"
+                             "開著遠端模式時，邀請連結也能直接用瀏覽器打開。",
+                             f"Don't want to install on the other PC? Open http://{self.ip}:{HTTP_PORT} in its browser to use the web version "
+                             "(you can drag files onto the page). With Remote mode on, the invite link also works in a browser."),
+                 bg=CARD, fg=MUTED, font=(FONT, 10), justify="left", wraplength=px(420)).pack(anchor="w", pady=(px(10), 0))
         foot = tk.Frame(box, bg=CARD)
         foot.pack(fill="x", pady=(px(14), 0))
         FlatButton(foot, T("重新搜尋", "Search again"), self.search_pcs, primary=False).pack(side="left")

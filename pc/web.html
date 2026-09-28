@@ -1,5 +1,6 @@
 <!doctype html>
-<!-- 網頁版口袋快傳：給 iPhone（或任何沒裝 App 的手機、電腦）用。電腦版在 /web 提供這一頁，API 跟 Android App 共用。 -->
+<!-- 網頁版口袋快傳：給 iPhone（或任何沒裝 App 的手機、電腦）用。電腦版在 /web 提供這一頁，API 跟 Android App 共用。
+     Android App 的「網頁分享」也提供同一頁（這時對方是手機，ON_PHONE 會被換成 true）。 -->
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -42,9 +43,12 @@ textarea{display:block;width:100%;min-height:72px;margin:14px 0 10px;border:1px 
 .empty{color:var(--muted);font-size:14px;margin:4px 0}
 .foot{color:var(--muted);text-align:center;font-size:12px;margin-top:14px}
 select.to{display:none;width:100%;margin:0 0 12px;padding:12px;border:0;border-radius:12px;background:var(--soft);color:var(--accent);font:inherit;font-weight:700}
+#drop{display:none;position:fixed;inset:0;z-index:9;background:rgba(26,38,86,.88);color:#fff;font-size:24px;font-weight:700;align-items:center;justify-content:center;text-align:center;padding:20px;border:4px dashed #7b9cff}
+body.dragging #drop{display:flex}
 #tip{display:none;background:#fff7e0;border:1px solid #f3dfa2;color:#7a5b00;border-radius:12px;padding:10px 12px;font-size:13px;margin-top:14px}
 </style></head>
 <body>
+<div id="drop"></div>
 <header><img src="/icon.png" alt=""><div><h1 id="title"></h1><div id="status"></div><div id="actions"></div></div></header>
 <main>
 <div id="tip"></div>
@@ -64,23 +68,32 @@ const ZH = (navigator.language || "").toLowerCase().startsWith("zh");
 const T = (zh, en) => ZH ? zh : en;
 const APP = T("口袋快傳", "PocketDrop");
 const $ = id => document.getElementById(id);
+const ON_PHONE = false;  // 手機 App 的網頁分享提供這一頁時會改成 true
+const HZ = ON_PHONE ? "手機" : "電腦", HE = ON_PHONE ? "phone" : "PC";  // 對方是什麼
 document.title = APP;
+const ua = navigator.userAgent;
+const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+const mobile = isIOS || /Android|Mobi/.test(ua);
+const devName = /iPhone/.test(ua) ? "iPhone" : isIOS ? "iPad"
+  : /Android/.test(ua) ? T("Android 瀏覽器", "Android browser")
+  : /Windows/.test(ua) ? T("Windows 電腦（瀏覽器）", "Windows PC (browser)")
+  : /Macintosh/.test(ua) ? T("Mac（瀏覽器）", "Mac (browser)") : T("電腦（瀏覽器）", "Computer (browser)");
 document.documentElement.lang = ZH ? "zh-Hant" : "en";
 $("title").textContent = APP;
 $("h-send").textContent = T("傳送", "Send");
-$("l-files").textContent = T("選照片／檔案", "Choose photos / files");
+$("l-files").textContent = mobile ? T("選照片／檔案", "Choose photos / files") : T("選檔案（也可以直接拖進這個網頁）", "Choose files (or drag them onto this page)");
 $("text").placeholder = T("輸入文字或網址…", "Type text or a link…");
 $("sendText").textContent = T("傳文字", "Send text");
 $("h-log").textContent = T("紀錄", "Activity");
-$("empty").textContent = T("還沒有傳過東西。在電腦版拖檔案進視窗，就會出現在這裡。",
-  "Nothing here yet. Drag files into PocketDrop on your PC and they'll show up here.");
-$("foot").textContent = T("這個網頁開著時才收得到電腦傳來的東西；傳檔時不要鎖螢幕",
-  "Keep this page open to receive from the PC, and don't lock the screen while transferring");
+$("empty").textContent = ON_PHONE
+  ? T("還沒有傳過東西。在手機 App 按「傳給」選這個網頁再傳，就會出現在這裡。", "Nothing here yet. In the phone app, pick this page under \"Send to\" and send something.")
+  : T("還沒有傳過東西。在電腦版拖檔案進視窗，就會出現在這裡。", "Nothing here yet. Drag files into PocketDrop on your PC and they'll show up here.");
+$("foot").textContent = ON_PHONE
+  ? T("這個網頁和手機上的口袋快傳都要開著才收得到；傳檔時手機不要鎖螢幕", "Keep this page and PocketDrop on the phone open, and don't lock the phone while transferring")
+  : mobile ? T("這個網頁開著時才收得到電腦傳來的東西；傳檔時不要鎖螢幕", "Keep this page open to receive from the PC, and don't lock the screen while transferring")
+  : T("這個網頁開著時才收得到電腦傳來的東西，收到的檔案會自動下載", "Keep this page open to receive from the PC; received files download automatically");
+$("drop").textContent = T("放開就傳過去", "Drop to send");
 
-const ua = navigator.userAgent;
-const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-const devName = /iPhone/.test(ua) ? "iPhone" : isIOS ? "iPad"
-  : /Android/.test(ua) ? T("Android 瀏覽器", "Android browser") : T("瀏覽器", "Browser");
 if (isIOS && !navigator.standalone) {
   $("tip").style.display = "block";
   $("tip").textContent = T("小技巧：按 Safari 的「分享」→「加入主畫面」，之後就能像 App 一樣直接打開。",
@@ -116,7 +129,7 @@ let failures = 0;
 let devId = store.get("pd_id");
 if (!devId) { devId = "web-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); store.set("pd_id", devId); }
 let key = store.get("pd_key");
-let pcName = store.get("pd_pc") || T("電腦", "PC");
+let pcName = store.get("pd_pc") || T(HZ, HE);
 let code = new URLSearchParams(location.search).get("code") || "";  // 掃電腦上的 QR code 帶來的配對碼
 let lastId = 0;
 let pageVersion = "";  // 電腦更新後版本會變，這時自動重新整理成新版網頁
@@ -137,7 +150,7 @@ function setStatus(text, cls, retry) {
 
 // ---- 連線：跟電腦打招呼拿鑰匙，之後一直問電腦有沒有東西要給手機
 async function hello() {
-  setStatus(code ? T("連線中…", "Connecting…") : T("請到電腦上按「允許」", "Click \"Allow\" on the PC"));
+  setStatus(code ? T("連線中…", "Connecting…") : T("請到" + HZ + "上按「允許」", "Click \"Allow\" on the " + HE));
   const r = await fetch("/api/hello" + (code ? "?code=" + encodeURIComponent(code) : ""), {
     method: "POST", headers: { "X-Device-Id": devId, "X-Device-Name": encodeURIComponent(devName) } });
   if (r.status === 200) {
@@ -149,7 +162,7 @@ async function hello() {
     return true;
   }
   if (r.status === 403) {
-    setStatus(T("電腦沒有允許連線", "The PC declined"), "warn", true);
+    setStatus(T(HZ + "沒有允許連線", "The " + HE + " declined"), "warn", true);
     waitingUser = true;
     return false;
   }
@@ -185,8 +198,8 @@ async function loop() {
         location.href = LAUNCHER + (rv ? "#" + new URLSearchParams({ rv: rv, name: pcName }).toString() : "");
         return;
       }
-      setStatus(T("連不上電腦，重試中…（電腦要開著口袋快傳、連同一個 Wi-Fi）",
-        "Can't reach the PC, retrying… (PocketDrop must be open on the PC, same Wi-Fi)"), "warn");
+      setStatus(T("連不上" + HZ + "，重試中…（" + HZ + "要開著口袋快傳、連同一個 Wi-Fi）",
+        "Can't reach the " + HE + ", retrying… (PocketDrop must be open on the " + HE + ", same Wi-Fi)"), "warn");
       await nap(3000);
     }
   }
@@ -197,7 +210,7 @@ function showPhones(phones) {
   const sel = $("to"), keep = sel.value;
   sel.textContent = "";
   const add = (value, label) => { const o = document.createElement("option"); o.value = value; o.textContent = label; sel.appendChild(o); };
-  add("", T("傳給：電腦「", "Send to: PC \"") + pcName + T("」", "\""));
+  add("", T("傳給：" + HZ + "「", "Send to: " + HE + " \"") + pcName + T("」", "\""));
   for (const ph of phones) add(ph.id, T("傳給：", "Send to: ") + ph.name + (ph.online ? T("（在線）", " (online)") : T("（離線，之後會收到）", " (offline, gets it later)")));
   sel.value = phones.some(ph => ph.id === keep) ? keep : "";
   sel.style.display = phones.length ? "block" : "none";
@@ -262,7 +275,7 @@ function receive(it) {
   }
   const name = it.name.split("/").pop();
   const el = entry("↓ " + it.name + (it.from ? T("（來自 ", " (from ") + it.from + T("）", ")") : ""));
-  sub(el, fmt(it.size) + " · " + T("按「下載」存到手機", "Tap Download to save it"));
+  sub(el, fmt(it.size) + " · " + (mobile ? T("按「下載」存到手機", "Tap Download to save it") : T("按「下載」存到這台電腦", "Click Download to save it")));
   const url = "/api/file?id=" + it.id + "&k=" + encodeURIComponent(key) + "&done=1";
   const dl = button(el, T("下載", "Download"), null, url);
   dl.setAttribute("download", name);
@@ -273,39 +286,78 @@ function receive(it) {
     const pv = button(el, T("預覽", "Preview"), null, url + "&inline=1");
     pv.target = "_blank";
   }
+  if (!mobile) dl.click();  // 電腦上的瀏覽器直接下載（第一次可能會問要不要允許下載多個檔案）
 }
 
 // ---- 手機 → 電腦（一個一個傳，XMLHttpRequest 才有上傳進度）
 const queue = [];
 let busy = false;
-$("files").addEventListener("change", e => {
-  for (const f of e.target.files) {
+function addFiles(list) {  // [{file, dir}]；dir 是拖資料夾進來時的相對路徑
+  for (const it of list) {
     const to = $("to").value, who = toName();
-    const el = entry("↑ " + f.name + (to ? " → " + who : ""));
+    const el = entry("↑ " + (it.dir ? it.dir + "/" : "") + it.file.name + (to ? " → " + who : ""));
     sub(el, T("等待傳送…", "Waiting…"));
-    queue.push({ file: f, el: el, to: to });
+    queue.push({ file: it.file, dir: it.dir, el: el, to: to });
   }
-  e.target.value = "";
   pump();
+}
+$("files").addEventListener("change", e => {
+  addFiles(Array.from(e.target.files).map(f => ({ file: f, dir: "" })));
+  e.target.value = "";
 });
+// 電腦上：檔案（或整個資料夾）直接拖進網頁、複製檔案或截圖後按 Ctrl+V
+const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+let dragDepth = 0;
+addEventListener("dragenter", e => { if (hasFiles(e)) { e.preventDefault(); dragDepth++; document.body.classList.add("dragging"); } });
+addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+addEventListener("drop", e => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("dragging");
+  // 要在放開的當下拿項目，之後就讀不到了
+  const entries = Array.from(e.dataTransfer.items || []).map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  const files = Array.from(e.dataTransfer.files);
+  if (!entries.length) return addFiles(files.map(f => ({ file: f, dir: "" })));
+  (async () => {
+    const out = [];
+    const walk = async (en, dir) => {
+      if (en.isFile) { out.push({ file: await new Promise((ok, no) => en.file(ok, no)), dir: dir }); return; }
+      const reader = en.createReader(), sub = dir ? dir + "/" + en.name : en.name;
+      for (;;) {
+        const batch = await new Promise((ok, no) => reader.readEntries(ok, no));
+        if (!batch.length) break;
+        for (const c of batch) await walk(c, sub);
+      }
+    };
+    for (const en of entries) { try { await walk(en, ""); } catch (err) {} }
+    addFiles(out);
+  })();
+});
+addEventListener("paste", e => {
+  const files = Array.from((e.clipboardData && e.clipboardData.files) || []);
+  if (files.length) { e.preventDefault(); addFiles(files.map(f => ({ file: f, dir: "" }))); }
+});
+$("text").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("sendText").click(); } });
 async function pump() {
   if (busy) return;
   busy = true;
-  while (queue.length) { const q = queue.shift(); await upload(q.file, q.el, q.to); }
+  while (queue.length) { const q = queue.shift(); await upload(q.file, q.el, q.to, q.dir); }
   busy = false;
 }
 // 分段上傳：遠端模式經過 Cloudflare，一次最多只能傳 100 MB，所以一段 32 MB 接起來
 const CHUNK = 32 * 1024 * 1024;
-function upload(file, el, to) {
+function upload(file, el, to, dir) {
   return new Promise(resolve => {
-    if (!key) { sub(el, T("✗ 還沒連上電腦", "✗ Not connected to the PC"), "bad"); return resolve(); }
+    if (!key) { sub(el, T("✗ 還沒連上" + HZ, "✗ Not connected to the " + HE), "bad"); return resolve(); }
     const uid = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
     const t0 = Date.now();
     const fail = msg => { bar(el); sub(el, msg, "bad"); resolve(); };
     const send = offset => {
       const end = Math.min(offset + CHUNK, file.size);
       const x = new XMLHttpRequest();
-      x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size + "&uid=" + uid + "&offset=" + offset + toParam(to));
+      x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name) + "&size=" + file.size + "&uid=" + uid + "&offset=" + offset + toParam(to) + (dir ? "&dir=" + encodeURIComponent(dir) : ""));
       x.setRequestHeader("X-Key", key);
       x.setRequestHeader("Content-Type", "application/octet-stream");
       x.upload.onprogress = ev => {
@@ -316,11 +368,11 @@ function upload(file, el, to) {
           + fmt(done) + " / " + fmt(file.size) + "  " + fmt(speed) + "/s");
       };
       x.onload = () => {
-        if (x.status !== 200) return fail(T("✗ 失敗：電腦回應 ", "✗ Failed: PC replied ") + x.status);
+        if (x.status !== 200) return fail(T("✗ 失敗：" + HZ + "回應 ", "✗ Failed: " + HE + " replied ") + x.status);
         if (end < file.size) return send(end);
         bar(el);
         sub(el, to ? T("✓ 已交給電腦轉送，對方打開後就會收到", "✓ Handed to the PC; delivered when they open it")
-          : T("✓ 已傳到電腦（", "✓ Sent to PC (") + fmt(file.size) + T("）", ")"), "ok");
+          : T("✓ 已傳到" + HZ + "（", "✓ Sent to " + HE + " (") + fmt(file.size) + T("）", ")"), "ok");
         resolve();
       };
       x.onerror = () => fail(T("✗ 傳到一半斷掉了", "✗ The connection dropped"));
@@ -340,7 +392,7 @@ $("sendText").onclick = async () => {
   try {
     const r = await fetch("/api/text" + (to ? "?to=" + encodeURIComponent(to) : ""), { method: "POST", headers: { "X-Key": key, "Content-Type": "text/plain; charset=utf-8" }, body: text });
     sub(el, !r.ok ? T("✗ 失敗", "✗ Failed") : to ? T("✓ 已交給電腦轉送，對方打開後就會收到", "✓ Handed to the PC; delivered when they open it")
-      : T("✓ 已傳到電腦", "✓ Sent to PC"), r.ok ? "ok" : "bad");
+      : T("✓ 已傳到" + HZ, "✓ Sent to " + HE), r.ok ? "ok" : "bad");
   } catch (e) {
     sub(el, T("✗ 傳送失敗，請再試一次", "✗ Couldn't send. Please try again"), "bad");
   }
