@@ -75,7 +75,7 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.10.2"
 # Android App 的網址開頭和套件名稱：網頁上的「用 App 打開」靠這兩個叫出 App
 APP_SCHEME = "pocketdrop"
 APP_PACKAGE = "io.github.benjaminwz.pocketdrop"
@@ -1475,6 +1475,52 @@ class FlatButton(tk.Label):
         self.bind("<Button-1>", lambda e: self.command())
 
 
+class SlimScrollbar(tk.Canvas):
+    """細細的淡色捲軸（內建的捲軸在白色卡片上很突兀）。滑鼠移上去變深，可以拖。"""
+
+    def __init__(self, parent, target):
+        super().__init__(parent, width=px(10), bg=CARD, highlightthickness=0, cursor="hand2")
+        self.target = target
+        self.first, self.last = 0.0, 1.0
+        self.hover = False
+        target.configure(yscrollcommand=self.set)
+        self.bind("<Configure>", lambda e: self.draw())
+        self.bind("<Enter>", lambda e: self.set_hover(True))
+        self.bind("<Leave>", lambda e: self.set_hover(False))
+        self.bind("<ButtonPress-1>", self.press)
+        self.bind("<B1-Motion>", self.drag)
+
+    def set(self, first, last):
+        self.first, self.last = float(first), float(last)
+        self.draw()
+
+    def set_hover(self, on):
+        self.hover = on
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        h, w = self.winfo_height(), self.winfo_width()
+        top, bottom = self.first * h, max(self.first * h + px(24), self.last * h)
+        r = px(3)
+        x0, x1 = w / 2 - r, w / 2 + r
+        color = "#aab4ca" if self.hover else "#d3d9e6"
+        self.create_rectangle(x0, top + r, x1, bottom - r, fill=color, outline="")
+        for y in (top + r, bottom - r):
+            self.create_oval(x0, y - r, x1, y + r, fill=color, outline="")
+
+    def press(self, e):
+        self.grab_y, self.grab_first = e.y, self.first
+        h = max(self.winfo_height(), 1)
+        if not self.first * h <= e.y <= self.last * h:  # 點在軌道上：跳到那裡
+            self.target.yview_moveto(max(0.0, e.y / h - (self.last - self.first) / 2))
+            self.grab_first = self.first
+
+    def drag(self, e):
+        h = max(self.winfo_height(), 1)
+        self.target.yview_moveto(self.grab_first + (e.y - self.grab_y) / h)
+
+
 class App:
     def __init__(self, root, hub, dnd_ok):
         global UI_SCALE
@@ -1560,6 +1606,13 @@ class App:
                                 padx=px(8), pady=px(6), insertbackground=TEXT)
         self.text_box.pack(side="left", fill="x", expand=True)
         self.text_box.bind("<Control-Return>", lambda e: (self.send_text(), "break")[1])
+        # 空白時顯示淡淡的提示字
+        self.text_hint = T("輸入文字或網址…（Ctrl+Enter 也能送出）", "Type text or a link… (Ctrl+Enter sends)")
+        self.text_box.tag_configure("hint", foreground="#a3acc0")
+        self.text_box.bind("<FocusIn>", lambda e: self.hide_text_hint())
+        self.text_box.bind("<FocusOut>", lambda e: self.show_text_hint())
+        self.hint_on = False
+        self.show_text_hint()
 
         # 紀錄
         card, box = self.card(body, T("紀錄", "Activity"))
@@ -1569,23 +1622,18 @@ class App:
         self.prog_label.pack(fill="x")
         self.prog_bar = ttk.Progressbar(self.prog, mode="determinate", maximum=1000)
         self.prog_bar.pack(fill="x", pady=(px(4), px(8)))
-        log_frame = tk.Frame(box, bg=LOG_BG, highlightthickness=1, highlightbackground=BORDER)
-        log_frame.pack(fill="both", expand=True)
-        self.log = tk.Text(log_frame, height=8, wrap="word", font=(FONT, 10), bg=LOG_BG, fg=TEXT, relief="flat",
-                           padx=px(10), pady=px(8), state="disabled", cursor="arrow")
-        bar = ttk.Scrollbar(log_frame, command=self.log.yview)
-        self.log.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.log.pack(side="left", fill="both", expand=True)
-        self.log.tag_configure("time", foreground=MUTED, font=(FONT, 9))
-        self.log.tag_configure("muted", foreground=MUTED)
-        self.log.tag_configure("ok", foreground=OK_COLOR)
-        self.log.tag_configure("warn", foreground=WARN_COLOR)
-        self.log.tag_configure("bad", foreground=BAD_COLOR)
-        self.log.tag_configure("quote", foreground=TEXT, background="#eef2fb", lmargin1=px(16), lmargin2=px(16))
-        self.log.tag_configure("link", foreground=ACCENT, underline=True)
-        self.log.tag_bind("link", "<Enter>", lambda e: self.log.configure(cursor="hand2"))
-        self.log.tag_bind("link", "<Leave>", lambda e: self.log.configure(cursor="arrow"))
+        # 一筆一張小卡片（像聊天軟體）：左邊彩色圓形圖示、中間說明和按鈕、右邊時間；傳來傳去的文字用對話泡泡
+        self.log_frame = tk.Frame(box, bg=CARD)
+        self.log_frame.pack(fill="both", expand=True)
+        self.feed_canvas = tk.Canvas(self.log_frame, bg=CARD, highlightthickness=0, height=px(150))
+        self.feed_bar = SlimScrollbar(self.log_frame, self.feed_canvas)
+        self.feed_canvas.pack(side="left", fill="both", expand=True)
+        self.feed = tk.Frame(self.feed_canvas, bg=CARD)
+        self.feed_win = self.feed_canvas.create_window(0, 0, window=self.feed, anchor="nw")
+        self.feed_canvas.bind("<Configure>", self.on_feed_resize)
+        self.feed_rows = []  # [(整列, 中間那欄, 要跟著寬度換行的字, 按鈕列)]
+        self.feed_width = px(400)
+        self.root.bind_all("<MouseWheel>", self.on_feed_wheel, add="+")
 
         # 下方：接收資料夾、其他
         bottom = tk.Frame(body, bg=BG)
@@ -1620,7 +1668,7 @@ class App:
         unpair.bind("<Button-1>", lambda e: self.manage_pairs())
 
         if self.dnd_ok:
-            for w in (self.drop, self.log):
+            for w in (self.drop, self.feed_canvas):
                 w.drop_target_register(DND_FILES)
                 w.dnd_bind("<<Drop>>", self.on_drop)
             self.drop.dnd_bind("<<DropEnter>>", lambda e: self.set_hover(True))
@@ -1652,31 +1700,90 @@ class App:
         self.draw_drop()
 
     # ---- 紀錄
+    # 圖示 → (圓形底色, 圖示顏色)
+    FEED_STYLE = {"✓": ("#e3f5eb", OK_COLOR), "↓": ("#e3f5eb", OK_COLOR), "↑": (ACCENT_SOFT, ACCENT),
+                  "⇄": ("#eef0f5", MUTED), "✗": ("#fdecec", BAD_COLOR)}
+
     def log_line(self, icon, text, tag=None, links=()):
-        """加一行紀錄。links = [(文字, 點了要做的事)]，會接在後面變成可以點的字。"""
-        log = self.log
-        log.configure(state="normal")
-        log.insert("end", time.strftime("%H:%M  "), "time")
-        log.insert("end", (icon + " " if icon else "") + text, tag or ())
-        for label, action in links:
-            self.link_count += 1
-            name = f"link{self.link_count}"
-            log.insert("end", "  ")
-            log.insert("end", label, ("link", name))
-            log.tag_bind(name, "<Button-1>", lambda e, a=action: a())
-        log.insert("end", "\n")
-        if int(log.index("end-1c").split(".")[0]) > 600:
-            log.delete("1.0", "100.0")
-        log.configure(state="disabled")
-        log.see("end")
+        """加一筆紀錄。links = [(文字, 點了要做的事)]，會變成下面的小按鈕。沒有圖示的是一般說明，用小灰字。"""
+        row = tk.Frame(self.feed, bg=CARD)
+        row.pack(fill="x", padx=(0, px(6)), pady=px(5))
+        if icon:
+            bg, fg = self.FEED_STYLE.get(icon, (ACCENT_SOFT, ACCENT))
+            if tag == "bad":
+                bg, fg = self.FEED_STYLE["✗"]
+            d = px(30)
+            badge = tk.Canvas(row, width=d, height=d, bg=CARD, highlightthickness=0)
+            badge.create_oval(1, 1, d - 1, d - 1, fill=bg, outline="")
+            badge.create_text(d / 2, d / 2, text=icon, fill=fg, font=(FONT, 14 if icon == "⇄" else 11, "bold"))
+            badge.pack(side="left", anchor="n", padx=(0, px(10)))
+        tk.Label(row, text=time.strftime("%H:%M"), bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="right", anchor="n",
+                                                                                          pady=(px(5) if icon else 0, 0))
+        body = tk.Frame(row, bg=CARD)
+        body.pack(side="left", fill="x", expand=True)
+        fg = BAD_COLOR if tag == "bad" else TEXT if icon else MUTED
+        title = tk.Label(body, text=text, bg=CARD, fg=fg, font=(FONT, 10 if icon else 9), justify="left", anchor="w")
+        title.pack(fill="x", anchor="w", pady=(px(5) if icon else 0, 0))
+        buttons = None
+        if links:
+            buttons = tk.Frame(body, bg=CARD)
+            buttons.pack(anchor="w", pady=(px(5), 0))
+            for label, action in links:
+                FlatButton(buttons, label, action, primary=False, small=True).pack(side="left", padx=(0, px(6)))
+        self.feed_rows.append((row, body, [title], buttons))
+        while len(self.feed_rows) > 150:  # 太舊的拿掉，免得越開越慢
+            self.feed_rows.pop(0)[0].destroy()
+        self.rewrap(self.feed_rows[-1])
+        self.feed_to_end()
 
     def log_quote(self, text):
-        log = self.log
-        log.configure(state="normal")
+        """傳來傳去的文字：放在最後一筆紀錄下面，用對話泡泡顯示。"""
+        if not self.feed_rows:
+            self.log_line("", "")
+        _row, body, wrap, buttons = self.feed_rows[-1]
         shown = text if len(text) <= 600 else text[:600] + "…"
-        log.insert("end", shown + "\n", "quote")
-        log.configure(state="disabled")
-        log.see("end")
+        bubble = tk.Label(body, text=shown, bg="#eef2ff", fg=TEXT, font=(FONT, 10), justify="left", anchor="w",
+                          padx=px(12), pady=px(8))
+        bubble.pack(anchor="w", pady=(px(6), 0), **({"before": buttons} if buttons else {}))
+        wrap.append(bubble)
+        self.rewrap(self.feed_rows[-1])
+        self.feed_to_end()
+
+    def rewrap(self, entry):
+        """字太長就換行：可以用的寬度 = 紀錄區寬度 - 圖示 - 時間。"""
+        width = max(px(160), self.feed_width - px(110))
+        for w in entry[2]:
+            w.configure(wraplength=width - (px(24) if w.cget("bg") == "#eef2ff" else 0))  # 泡泡左右有留白
+
+    def on_feed_resize(self, event):
+        self.feed_width = event.width
+        self.feed_canvas.itemconfigure(self.feed_win, width=event.width)
+        for entry in self.feed_rows:
+            self.rewrap(entry)
+        self.root.after_idle(self.update_feed_scroll)
+
+    def update_feed_scroll(self):
+        """內容放得下就不顯示捲軸。"""
+        self.feed.update_idletasks()
+        self.feed_canvas.configure(scrollregion=(0, 0, self.feed_width, self.feed.winfo_reqheight()))
+        need = self.feed.winfo_reqheight() > self.feed_canvas.winfo_height() + 2
+        if need and not self.feed_bar.winfo_ismapped():
+            self.feed_bar.pack(side="right", fill="y", before=self.feed_canvas)
+        elif not need and self.feed_bar.winfo_ismapped():
+            self.feed_bar.pack_forget()
+
+    def feed_to_end(self):
+        self.update_feed_scroll()
+        self.feed_canvas.yview_moveto(1.0)
+
+    def on_feed_wheel(self, event):
+        """滑鼠在紀錄上面滾輪：捲動紀錄。"""
+        w = self.root.winfo_containing(event.x_root, event.y_root)
+        while w is not None:
+            if w is self.log_frame:
+                self.feed_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+                return "break"
+            w = w.master
 
     # ---- 事件（網路那邊丟過來的）
     def pump(self):
@@ -1722,7 +1829,7 @@ class App:
         elif kind == "update_ready":
             self.install_update(event[1], event[2])
         elif kind == "relay":
-            self.log_line("↔", T(f"{event[1]} → {event[2]}：{event[3]}（轉送中，對方打開 App 就會收到）",
+            self.log_line("⇄", T(f"{event[1]} → {event[2]}：{event[3]}（轉送中，對方打開 App 就會收到）",
                                  f"{event[1]} → {event[2]}: {event[3]} (relaying; delivered when that phone opens the app)"), "muted")
         elif kind == "pc_sent":
             self.on_pc_sent(*event[1:])
@@ -1749,7 +1856,7 @@ class App:
         else:
             self.active.pop(tid, None)
             if direction == "in" and state == "relay":
-                self.log_line("↔", T(f"{path[0]} → {path[1]}：{name}（轉送中，對方打開 App 就會收到）",
+                self.log_line("⇄", T(f"{path[0]} → {path[1]}：{name}（轉送中，對方打開 App 就會收到）",
                                      f"{path[0]} → {path[1]}: {name} (relaying; delivered when that phone opens the app)"), "muted")
             elif direction == "in":
                 if state == "ok":
@@ -1778,7 +1885,7 @@ class App:
             self.prog_bar.configure(value=0)
         self.prog_label.configure(text=text)
         if not self.prog.winfo_ismapped():
-            self.prog.pack(fill="x", before=self.log.master)
+            self.prog.pack(fill="x", before=self.log_frame)
 
     def on_text_in(self, dev_name, text):
         copied = False
@@ -1908,8 +2015,19 @@ class App:
             names = T("、", ", ").join(waiting)
             self.log_line("", T(f"{names} 還沒連上：打開 App 或網頁版就會自動收下", f"{names} not connected yet. It will receive them when the app or web page opens"), "warn")
 
+    def show_text_hint(self):
+        if not self.text_box.get("1.0", "end-1c").strip():
+            self.text_box.delete("1.0", "end")
+            self.text_box.insert("1.0", self.text_hint, "hint")
+            self.hint_on = True
+
+    def hide_text_hint(self):
+        if self.hint_on:
+            self.text_box.delete("1.0", "end")
+            self.hint_on = False
+
     def send_text(self):
-        text = self.text_box.get("1.0", "end-1c")
+        text = "" if self.hint_on else self.text_box.get("1.0", "end-1c")
         if not text.strip():
             return
         targets = self.selected_targets()
