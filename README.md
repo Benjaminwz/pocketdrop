@@ -1,23 +1,12 @@
-<p align="center"><img src="docs/icon.png" width="96" alt="口袋快傳圖示"></p>
-
-<h1 align="center">口袋快傳 PocketDrop</h1>
+<p align="center"><img src="docs/banner.png" width="100%" alt="口袋快傳 PocketDrop：手機和電腦互傳照片、影片、檔案，原檔不壓縮"></p>
 
 <p align="center">
-<b>手機和電腦互傳照片、影片、檔案和文字。</b><br>
-📷 原檔不壓縮 ・ ⚡ 大檔案也快 ・ 📁 整個資料夾一次傳 ・ 🔓 不用帳號<br>
-不用設定，裝好打開就能用。Android、iPhone 都可以。<br>
-<a href="#english">English</a>
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><img src="docs/btn-windows.png" height="62" alt="下載 Windows 版"></a>&nbsp;&nbsp;
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><img src="docs/btn-android.png" height="62" alt="下載 Android App"></a>&nbsp;&nbsp;
+<a href="#三步開始用"><img src="docs/btn-iphone.png" height="62" alt="iPhone 免安裝"></a>
 </p>
 
-<p align="center">
-<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><b>⬇ 下載電腦版（Windows）</b></a>
-&nbsp;·&nbsp;
-<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><b>⬇ 下載 Android App</b></a>
-&nbsp;·&nbsp;
-iPhone 不用下載
-</p>
-
-<p align="center"><img src="docs/screenshot-pc.png" width="420" alt="口袋快傳電腦版"></p>
+<p align="center"><sub>免費、開放原始碼，不用註冊任何帳號。　<a href="#english">English</a></sub></p>
 
 ## 為什麼不用 LINE 傳給自己？
 
@@ -162,6 +151,8 @@ powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.3
 
 ## English
 
+<p align="center"><img src="docs/banner-en.png" width="100%" alt="PocketDrop: phone to PC, in original quality"></p>
+
 **PocketDrop** sends photos, videos, files and text between your phone and your PC. No account, no setup: install it and it works. Android and iPhone.
 
 **Why not just message it to yourself?**
@@ -171,7 +162,12 @@ powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.3
 - **Saved automatically** to Downloads, and received text is already on your clipboard.
 - **Private and offline:** at home nothing passes through anyone's server, and it works with no internet at all.
 
-**[⬇ Windows](https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe)** · **[⬇ Android app](https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk)** · iPhone needs no app
+<p align="center">
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><img src="docs/btn-windows-en.png" height="62" alt="Download for Windows"></a>&nbsp;&nbsp;
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><img src="docs/btn-android-en.png" height="62" alt="Android app"></a>
+</p>
+
+<p align="center"><sub>iPhone needs no app: scan the QR code shown by the PC app.</sub></p>
 
 1. **Install on your PC.** If Windows shows "Windows protected your PC", click *More info → Run anyway* (the installer isn't code-signed).
 2. **Connect your phone (first time only).** The app opens a "Connect a phone" guide. Android: plug in the cable (File transfer) and the app is copied to your phone, or scan the QR code. iPhone: scan the QR code with the camera, then *Share → Add to Home Screen*.
