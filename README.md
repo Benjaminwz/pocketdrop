@@ -1,9 +1,9 @@
 <p align="center"><img src="docs/banner.png" width="100%" alt="口袋快傳 PocketDrop：手機和電腦互傳照片、影片、檔案，原檔不壓縮"></p>
 
 <p align="center">
-<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><img src="docs/btn-windows.png" height="62" alt="下載 Windows 版"></a>&nbsp;&nbsp;
-<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><img src="docs/btn-android.png" height="62" alt="下載 Android App"></a>&nbsp;&nbsp;
-<a href="#三步開始用"><img src="docs/btn-iphone.png" height="62" alt="iPhone 免安裝"></a>
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><img src="docs/btn-windows.png" height="54" alt="下載 Windows 版"></a>&nbsp;&nbsp;
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><img src="docs/btn-android.png" height="54" alt="下載 Android App"></a>&nbsp;&nbsp;
+<a href="#三步開始用"><img src="docs/btn-iphone.png" height="54" alt="iPhone 免安裝"></a>
 </p>
 
 <p align="center"><sub>免費、開放原始碼，不用註冊任何帳號。　<a href="#english">English</a></sub></p>
@@ -163,8 +163,8 @@ powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.3
 - **Private and offline:** at home nothing passes through anyone's server, and it works with no internet at all.
 
 <p align="center">
-<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><img src="docs/btn-windows-en.png" height="62" alt="Download for Windows"></a>&nbsp;&nbsp;
-<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><img src="docs/btn-android-en.png" height="62" alt="Android app"></a>
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe"><img src="docs/btn-windows-en.png" height="54" alt="Download for Windows"></a>&nbsp;&nbsp;
+<a href="https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk"><img src="docs/btn-android-en.png" height="54" alt="Android app"></a>
 </p>
 
 <p align="center"><sub>iPhone needs no app: scan the QR code shown by the PC app.</sub></p>
