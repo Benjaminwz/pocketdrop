@@ -4,7 +4,8 @@
 
 <p align="center">
 <b>手機和電腦互傳照片、影片、檔案和文字。</b><br>
-不用帳號、不用設定，裝好打開就能用。Android、iPhone 都可以。<br>
+📷 原檔不壓縮 ・ ⚡ 大檔案也快 ・ 📁 整個資料夾一次傳 ・ 🔓 不用帳號<br>
+不用設定，裝好打開就能用。Android、iPhone 都可以。<br>
 <a href="#english">English</a>
 </p>
 
@@ -17,6 +18,22 @@ iPhone 不用下載
 </p>
 
 <p align="center"><img src="docs/screenshot-pc.png" width="420" alt="口袋快傳電腦版"></p>
+
+## 為什麼不用 LINE 傳給自己？
+
+|  | 口袋快傳 | LINE 傳給自己 |
+|---|---|---|
+| **畫質** | 原檔，一點都不壓縮 | 照片、影片預設會壓縮 |
+| **速度** | 在家裡的 Wi-Fi 或傳輸線上直接傳，大檔案快很多 | 先上傳到網路再下載回來 |
+| **大檔案** | 沒有大小限制，幾十 GB 的影片也行 | 檔案有大小上限，放久了會過期 |
+| **一次很多檔案** | 整個資料夾拖進去，結構照樣保留 | 不能傳資料夾，要一個一個處理 |
+| **存檔** | 自動存進「下載」資料夾 | 要一個一個點開、另存 |
+| **文字、網址** | 收到自動複製，直接貼上 | 要打開聊天室長按複製 |
+| **隱私** | 在家裡傳，檔案不經過任何伺服器 | 檔案會經過 LINE 的伺服器 |
+| **沒網路** | 同一個 Wi-Fi、熱點或傳輸線就能傳，不吃手機流量 | 一定要有網路 |
+| **帳號** | 不用 | 電腦要登入 LINE |
+
+**傳給朋友，LINE 還是最方便；傳給自己的手機和電腦，用口袋快傳。**
 
 ## 三步開始用
 
@@ -146,6 +163,13 @@ powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.3
 ## English
 
 **PocketDrop** sends photos, videos, files and text between your phone and your PC. No account, no setup: install it and it works. Android and iPhone.
+
+**Why not just message it to yourself?**
+- **Original quality:** chat apps usually compress photos and videos; PocketDrop never does.
+- **Faster:** files go straight over your home Wi-Fi or a USB cable instead of up to the internet and back.
+- **No size limit, whole folders:** send a 50 GB video or a folder of 1,000 photos with its structure intact.
+- **Saved automatically** to Downloads, and received text is already on your clipboard.
+- **Private and offline:** at home nothing passes through anyone's server, and it works with no internet at all.
 
 **[⬇ Windows](https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop-Setup.exe)** · **[⬇ Android app](https://github.com/Benjaminwz/pocketdrop/releases/latest/download/PocketDrop.apk)** · iPhone needs no app
 
