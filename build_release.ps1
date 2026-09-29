@@ -36,4 +36,7 @@ $defs = @("/DAppVersion=$Version")
 if ($Test) { $defs += "/DTESTBUILD" }
 & $iscc /Q @defs "$Root\installer\pocketdrop.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+# Same installer without the version in its name: the README links to releases/latest/download/PocketDrop-Setup.exe.
+# (The in-app updater only matches "PocketDrop-Setup-<version>.exe", so the copy doesn't confuse it.)
+Copy-Item "$Root\dist\PocketDrop-Setup-$Version.exe" "$Root\dist\PocketDrop-Setup.exe" -Force
 Get-ChildItem "$Root\dist" -File | ForEach-Object { "{0,-32} {1,8:N0} KB" -f $_.Name, ($_.Length / 1KB) }
