@@ -122,10 +122,10 @@ python pc/pocketdrop.pyw
 先準備好 Android 的工具（JDK 17、Android SDK 的 `build-tools;35.0.0` 和 `platforms;android-35`，不需要 Android Studio 或 Gradle）、`pip install pyinstaller`，以及 [Inno Setup 6](https://jrsoftware.org/isinfo.php)：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.2
+powershell -ExecutionPolicy Bypass -File build_release.ps1 -Version 1.10.3
 ```
 
-會做出 `PocketDrop.apk`、`dist\PocketDrop.exe`、`dist\PocketDrop-Setup-1.10.2.exe` 和同一個安裝檔的無版本號副本 `dist\PocketDrop-Setup.exe`（README 的下載連結用它）。發布時四個檔案都要附上。`pc\pocketdrop.pyw` 的 `APP_VERSION` 要跟 `-Version` 一樣；Android 版本碼自動算（1.10.2 → 11002）。只做 App 可以執行 `build_apk.ps1 -Tools <放 jdk-17* 和 sdk 的資料夾>`；第一次會產生簽名金鑰 `android/release.keystore`，請保存好。
+會做出 `PocketDrop.apk`、`dist\PocketDrop.exe`、`dist\PocketDrop-Setup-1.10.3.exe` 和同一個安裝檔的無版本號副本 `dist\PocketDrop-Setup.exe`（README 的下載連結用它）。發布時四個檔案都要附上。`pc\pocketdrop.pyw` 的 `APP_VERSION` 要跟 `-Version` 一樣；Android 版本碼自動算（1.10.3 → 11003）。只做 App 可以執行 `build_apk.ps1 -Tools <放 jdk-17* 和 sdk 的資料夾>`；第一次會產生簽名金鑰 `android/release.keystore`，請保存好。
 
 ### 運作方式
 

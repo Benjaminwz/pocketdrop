@@ -75,7 +75,7 @@ def T(zh, en):
 
 APP_NAME = T("口袋快傳", "PocketDrop")
 APP_ID = "PocketDrop.Desktop"
-APP_VERSION = "1.10.2"
+APP_VERSION = "1.10.3"
 # Android App 的網址開頭和套件名稱：網頁上的「用 App 打開」靠這兩個叫出 App
 APP_SCHEME = "pocketdrop"
 APP_PACKAGE = "io.github.benjaminwz.pocketdrop"
@@ -1479,7 +1479,8 @@ class SlimScrollbar(tk.Canvas):
     """細細的淡色捲軸（內建的捲軸在白色卡片上很突兀）。滑鼠移上去變深，可以拖。"""
 
     def __init__(self, parent, target):
-        super().__init__(parent, width=px(10), bg=CARD, highlightthickness=0, cursor="hand2")
+        # height=1：畫布預設會要一大塊高度，會把整個視窗的版面往下推（實際高度跟著紀錄區撐滿）
+        super().__init__(parent, width=px(10), height=1, bg=CARD, highlightthickness=0, cursor="hand2")
         self.target = target
         self.first, self.last = 0.0, 1.0
         self.hover = False
@@ -1631,8 +1632,11 @@ class App:
         self.feed = tk.Frame(self.feed_canvas, bg=CARD)
         self.feed_win = self.feed_canvas.create_window(0, 0, window=self.feed, anchor="nw")
         self.feed_canvas.bind("<Configure>", self.on_feed_resize)
+        self.feed.bind("<Configure>", lambda e: self.schedule_feed())  # 內容高度變了（例如換行）也要更新捲動範圍
         self.feed_rows = []  # [(整列, 中間那欄, 要跟著寬度換行的字, 按鈕列)]
         self.feed_width = px(400)
+        self.feed_pending = False  # 已經排好要更新捲動範圍了
+        self.feed_end = False      # 更新時順便捲到最下面
         self.root.bind_all("<MouseWheel>", self.on_feed_wheel, add="+")
 
         # 下方：接收資料夾、其他
@@ -1760,21 +1764,30 @@ class App:
         self.feed_canvas.itemconfigure(self.feed_win, width=event.width)
         for entry in self.feed_rows:
             self.rewrap(entry)
-        self.root.after_idle(self.update_feed_scroll)
+        self.schedule_feed()
+
+    def schedule_feed(self, to_end=False):
+        """稍後（等版面排好）再更新捲動範圍。不要在這裡直接 update_idletasks：會跟視窗大小改變的事件互相觸發，整個程式卡住。"""
+        self.feed_end = self.feed_end or to_end
+        if not self.feed_pending:
+            self.feed_pending = True
+            self.root.after(20, self.update_feed_scroll)
 
     def update_feed_scroll(self):
-        """內容放得下就不顯示捲軸。"""
+        """內容超過紀錄區的高度才出現捲軸；出現之後就一直留著，免得寬度一直變、捲軸一直閃。"""
+        self.feed_pending = False
+        # 這裡是計時器叫的（不是 after_idle），先把版面排好不會再觸發自己，也才量得到新加的那幾筆
         self.feed.update_idletasks()
-        self.feed_canvas.configure(scrollregion=(0, 0, self.feed_width, self.feed.winfo_reqheight()))
-        need = self.feed.winfo_reqheight() > self.feed_canvas.winfo_height() + 2
-        if need and not self.feed_bar.winfo_ismapped():
+        height = self.feed.winfo_reqheight()
+        self.feed_canvas.configure(scrollregion=(0, 0, self.feed_width, height))
+        if height > self.feed_canvas.winfo_height() + 2 and not self.feed_bar.winfo_ismapped():
             self.feed_bar.pack(side="right", fill="y", before=self.feed_canvas)
-        elif not need and self.feed_bar.winfo_ismapped():
-            self.feed_bar.pack_forget()
+        if self.feed_end:
+            self.feed_end = False
+            self.feed_canvas.yview_moveto(1.0)
 
     def feed_to_end(self):
-        self.update_feed_scroll()
-        self.feed_canvas.yview_moveto(1.0)
+        self.schedule_feed(to_end=True)
 
     def on_feed_wheel(self, event):
         """滑鼠在紀錄上面滾輪：捲動紀錄。"""
